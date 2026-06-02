@@ -1,7 +1,9 @@
 'use client';
 import { create } from 'zustand';
-import { produce } from 'immer';
+import { enableMapSet, produce } from 'immer';
 import type { Placement } from '@planiq/shared';
+
+enableMapSet();
 
 /** Editor state with an undo/redo command stack and debounced-dirty tracking. */
 interface HistoryEntry { placements: Record<string, Placement>; }

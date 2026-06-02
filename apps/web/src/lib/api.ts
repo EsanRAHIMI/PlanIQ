@@ -1,10 +1,48 @@
 'use client';
 
+import { toast } from '@/lib/toast';
+
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1';
 
 let accessToken: string | null = null;
-export const setToken = (t: string | null) => { accessToken = t; if (typeof window !== 'undefined') { t ? localStorage.setItem('pq_t', t) : localStorage.removeItem('pq_t'); } };
-export const loadToken = () => { if (typeof window !== 'undefined' && !accessToken) accessToken = localStorage.getItem('pq_t'); return accessToken; };
+let sessionRedirecting = false;
+
+export const setToken = (t: string | null) => {
+  accessToken = t;
+  if (t) sessionRedirecting = false;
+  if (typeof window !== 'undefined') {
+    t ? localStorage.setItem('pq_t', t) : localStorage.removeItem('pq_t');
+  }
+};
+export const loadToken = () => {
+  if (typeof window !== 'undefined' && !accessToken) accessToken = localStorage.getItem('pq_t');
+  return accessToken;
+};
+
+export function clearSession() {
+  setToken(null);
+}
+
+async function handleSessionExpired() {
+  if (sessionRedirecting) return;
+  sessionRedirecting = true;
+  clearSession();
+  toast.error('Session expired. Please sign in again.');
+  if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    window.location.href = '/login';
+  }
+}
+
+/** Sign out: clear token, revoke refresh cookie, redirect to login. */
+export async function logout() {
+  clearSession();
+  try {
+    await fetch(`${BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+  } catch {
+    // Best-effort server logout; local session is already cleared.
+  }
+  if (typeof window !== 'undefined') window.location.href = '/login';
+}
 
 export interface ApiErrorDetail {
   code?: string;
@@ -66,6 +104,19 @@ async function request<T>(path: string, opts: RequestInit = {}, retry = true): P
   if (res.status === 401 && retry && !path.startsWith('/auth')) {
     const ok = await refresh();
     if (ok) return request<T>(path, opts, false);
+    await handleSessionExpired();
+    throw new ApiError('Session expired', 401, path, { code: 'UNAUTHENTICATED', message: 'Session expired' });
+  }
+  if (res.status === 401) {
+    if (!path.startsWith('/auth')) await handleSessionExpired();
+    const body = await res.json().catch(() => ({}));
+    const err = body?.error ?? {};
+    throw new ApiError(
+      err.message ?? 'Unauthorized',
+      401,
+      path,
+      { code: err.code, message: err.message, details: err.details, traceId: err.traceId },
+    );
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

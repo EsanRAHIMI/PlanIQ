@@ -2,7 +2,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api, loadToken } from '@/lib/api';
+import { api, loadToken, ApiError } from '@/lib/api';
+import { LogoutButton } from '@/components/LogoutButton';
 
 export default function Dashboard() {
   // Local dev smoke marker: verifies Next.js hot-reload without Docker rebuild.
@@ -14,8 +15,15 @@ export default function Dashboard() {
   const [createError, setCreateError] = useState('');
 
   async function refresh() {
-    try { const r = await api.get<{ items: any[] }>('/projects'); setProjects(r.items); }
-    catch { router.push('/login'); } finally { setLoading(false); }
+    try {
+      const r = await api.get<{ items: any[] }>('/projects');
+      setProjects(r.items);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return;
+      if (!loadToken()) router.push('/login');
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { if (!loadToken()) { router.push('/login'); return; } refresh(); }, []);
 
@@ -45,7 +53,10 @@ export default function Dashboard() {
           <div className="text-xs font-bold tracking-widest text-brand">PLANIQ</div>
           <h1 className="text-2xl font-bold">Projects</h1>
         </div>
-        <button className="btn-primary" onClick={() => setCreating(true)}>New project</button>
+        <div className="flex items-center gap-2">
+          <button className="btn-primary" onClick={() => setCreating(true)}>New project</button>
+          <LogoutButton />
+        </div>
       </header>
 
       {creating && (

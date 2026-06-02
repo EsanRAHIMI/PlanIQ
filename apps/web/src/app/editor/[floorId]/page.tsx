@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useParams } from 'next/navigation';
-import { api } from '@/lib/api';
+import { api, formatApiError } from '@/lib/api';
+import { toast } from '@/lib/toast';
 import { useEditor } from '@/features/editor/store';
 import { DeviceLibraryPanel, PropertiesPanel } from '@/components/editor/Panels';
 import { AiSummaryPanel } from '@/components/editor/AiSummaryPanel';
@@ -18,6 +19,7 @@ export default function EditorPage() {
   const [rasterUrl, setRasterUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [qcSummary, setQcSummary] = useState<AnalysisQcSummary | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
 
   const { load, takeDirty, moveSelected, undo, redo, duplicateSelected, deleteSelected, debugMode, setDebugMode } = useEditor();
@@ -36,15 +38,19 @@ export default function EditorPage() {
 
   useEffect(() => {
     (async () => {
-      const [dev, flr] = await Promise.all([
-        api.get<DeviceDef[]>('/devices'),
-        api.get<any>(`/floors/${floorId}`),
-      ]);
-      setDevices(dev);
-      setFloor(flr);
-      setRasterUrl(flr.rasterUrl ?? null);
-      setQcSummary(flr.analysis?.qcSummary ?? null);
-      await loadPlacements(false);
+      try {
+        const [dev, flr] = await Promise.all([
+          api.get<DeviceDef[]>('/devices'),
+          api.get<any>(`/floors/${floorId}`),
+        ]);
+        setDevices(dev);
+        setFloor(flr);
+        setRasterUrl(flr.rasterUrl ?? null);
+        setQcSummary(flr.analysis?.qcSummary ?? null);
+        await loadPlacements(false);
+      } catch {
+        // Auth failures handled globally in api.ts (toast + redirect).
+      }
     })();
   }, [floorId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -64,6 +70,8 @@ export default function EditorPage() {
           upserts: upserts.map((p: any) => ({ ...p, id: String(p.id).startsWith('loc_') ? undefined : p.id })),
           deletes: deletes.filter((d) => !d.startsWith('loc_')),
         });
+      } catch {
+        // Auth errors handled in api.ts; avoid unhandled rejection.
       } finally { setSaving(false); }
     }, 800);
     return () => clearTimeout(saveTimer.current);
@@ -87,14 +95,30 @@ export default function EditorPage() {
   }, [undo, redo, duplicateSelected, deleteSelected, moveSelected]);
 
   const onSuggest = useCallback(async () => {
-    const { placements, summary } = await api.post<{ placements: Placement[]; summary: AnalysisQcSummary }>(
-      `/floors/${floorId}/placements/suggest`,
-    );
-    setQcSummary(summary);
-    const current = useEditor.getState().placements;
-    const merged = [...Object.values(current), ...placements] as Placement[];
-    load(floorId, merged, useEditor.getState().layers);
-  }, [floorId, load]);
+    setSuggesting(true);
+    const toastId = toast.loading('Re-running AI suggestions…');
+    try {
+      const res = await api.post<{
+        placements: Placement[];
+        summary: AnalysisQcSummary;
+        replaced?: number;
+        roomCount?: number;
+      }>(`/floors/${floorId}/placements/suggest`);
+
+      setQcSummary(res.summary);
+      await loadPlacements(false);
+
+      if (!res.placements?.length) {
+        toast.warning('No suggestions passed quality checks. Enable debug mode to inspect rejections.', { id: toastId });
+        return;
+      }
+      toast.success(`Applied ${res.placements.length} AI suggestion(s)`, { id: toastId });
+    } catch (err) {
+      toast.error(formatApiError(err, 'Re-run AI suggestions'), { id: toastId });
+    } finally {
+      setSuggesting(false);
+    }
+  }, [floorId, loadPlacements]);
 
   const onSnapshot = useCallback(async () => {
     const label = prompt('Version label?') ?? undefined;
@@ -104,7 +128,13 @@ export default function EditorPage() {
 
   return (
     <div className="flex h-screen flex-col">
-      <Toolbar floorName={floor?.name ?? 'Editor'} saving={saving} onSuggest={onSuggest} onSnapshot={onSnapshot} />
+      <Toolbar
+        floorName={floor?.name ?? 'Editor'}
+        saving={saving}
+        suggesting={suggesting}
+        onSuggest={onSuggest}
+        onSnapshot={onSnapshot}
+      />
       <div className="flex flex-1 overflow-hidden">
         <DeviceLibraryPanel devices={devices} />
         <div className="flex flex-1 flex-col">

@@ -1,4 +1,4 @@
-import { Module, Injectable, Controller, Get, Post, Patch, Delete, Param, Body, UsePipes, Query } from '@nestjs/common';
+import { Module, Injectable, Controller, Get, Post, Patch, Delete, Param, Body, UsePipes, Query, NotFoundException, BadRequestException } from '@nestjs/common';
 import { MongooseModule, InjectModel } from '@nestjs/mongoose';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Model } from 'mongoose';
@@ -6,6 +6,29 @@ import { batchPlacementSchema, suggestPlacements, DEFAULT_RULE_CONFIG, runQualit
 import { MODELS, PlacementSchema, LayerSchema, DetectedRoomSchema, DetectedZoneSchema, FloorSchema } from '../../db/schemas';
 import { ZodValidationPipe } from '../../common/zod.pipe';
 import { CurrentUser, AuthUser } from '../../common/decorators';
+
+function normalizeRoom(r: any) {
+  return {
+    label: r.label ?? 'Space',
+    rawLabel: r.rawLabel,
+    type: r.type ?? 'corridor',
+    polygon: r.polygon ?? [],
+    centroid: Array.isArray(r.centroid) ? r.centroid : [0.5, 0.5],
+    area: typeof r.area === 'number' ? r.area : 0.05,
+    confidence: typeof r.confidence === 'number' ? r.confidence : 0.6,
+    source: r.source ?? 'cv',
+    reviewed: r.reviewed ?? false,
+  };
+}
+
+function normalizeZone(z: any) {
+  return {
+    type: z.type ?? 'outdoor',
+    geometry: z.geometry ?? { kind: 'point', coords: [[0.5, 0.5]] },
+    confidence: typeof z.confidence === 'number' ? z.confidence : 0.6,
+    source: z.source ?? 'cv',
+  };
+}
 
 @Injectable()
 export class PlacementsService {
@@ -61,16 +84,73 @@ export class PlacementsService {
     return { ok: true };
   }
 
-  /** Re-run conservative rule engine + QC over current rooms/zones. */
+  /** Re-run conservative rule engine + QC; replace unreviewed AI placements in DB. */
   async suggest(user: AuthUser, floorId: string) {
-    const [rooms, zones] = await Promise.all([
+    const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean();
+    if (!floor) throw new NotFoundException('Floor not found');
+
+    const [roomsRaw, zonesRaw] = await Promise.all([
       this.rooms.find({ floorId, tenantId: user.tenantId }).lean(),
       this.zones.find({ floorId, tenantId: user.tenantId }).lean(),
     ]);
+
+    if (!roomsRaw.length) {
+      throw new BadRequestException(
+        'No detected rooms on this floor. Upload a plan or run floor analysis before re-suggesting devices.',
+      );
+    }
+
+    const rooms = roomsRaw.map(normalizeRoom);
+    const zones = zonesRaw.map(normalizeZone);
     const raw = suggestPlacements(rooms as any, zones as any, DEFAULT_RULE_CONFIG);
     const { placements, summary } = runQualityPipeline(rooms as any, zones as any, raw);
-    await this.floors.updateOne({ _id: floorId }, { 'analysis.qcSummary': summary });
-    return { placements: placements.filter((p) => !p.hidden), summary, allPlacements: placements };
+    const accepted = placements.filter((p) => !p.hidden);
+
+    const removed = await this.placements.deleteMany({
+      floorId, tenantId: user.tenantId, source: 'ai', reviewed: false,
+    });
+
+    let persisted: any[] = [];
+    if (accepted.length) {
+      const docs = accepted.map((p) => ({
+        deviceCode: p.deviceCode,
+        label: p.label,
+        position: p.position,
+        rotation: p.rotation ?? 0,
+        scale: p.scale ?? 1,
+        locked: p.locked ?? false,
+        hidden: false,
+        source: 'ai',
+        reviewed: false,
+        rationale: p.rationale,
+        confidence: p.confidence,
+        props: p.props ?? {},
+        meta: p.meta ?? {},
+        zIndex: p.zIndex ?? 0,
+        floorId,
+        tenantId: user.tenantId,
+        projectId: floor.projectId,
+      }));
+      persisted = await this.placements.insertMany(docs);
+    }
+
+    const visibleCount = await this.placements.countDocuments({
+      floorId, tenantId: user.tenantId, hidden: { $ne: true },
+    });
+    await this.floors.updateOne(
+      { _id: floorId },
+      { 'counts.placements': visibleCount, 'analysis.qcSummary': summary },
+    );
+
+    return {
+      placements: persisted.map((doc: any) => ({
+        ...doc.toObject?.() ?? doc,
+        id: String(doc._id),
+      })),
+      summary,
+      replaced: removed.deletedCount ?? 0,
+      roomCount: rooms.length,
+    };
   }
 }
 

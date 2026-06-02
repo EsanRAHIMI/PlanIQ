@@ -1,8 +1,9 @@
 'use client';
 import { useEditor } from '@/features/editor/store';
+import { LogoutButton } from '@/components/LogoutButton';
 
-export function Toolbar({ floorName, saving, onSuggest, onSnapshot }: {
-  floorName: string; saving: boolean; onSuggest: () => void; onSnapshot: () => void;
+export function Toolbar({ floorName, saving, suggesting, onSuggest, onSnapshot }: {
+  floorName: string; saving: boolean; suggesting?: boolean; onSuggest: () => void; onSnapshot: () => void;
 }) {
   const { undo, redo, duplicateSelected, deleteSelected, rotateSelected, toggleLock, toggleHide, groupSelected, selectedIds } = useEditor();
   const has = selectedIds.length > 0;
@@ -24,8 +25,15 @@ export function Toolbar({ floorName, saving, onSuggest, onSnapshot }: {
       <Btn onClick={groupSelected} disabled={selectedIds.length < 2}>Group</Btn>
       <Btn onClick={deleteSelected} disabled={!has}>Delete</Btn>
       <div className="ml-auto flex gap-2">
+        <LogoutButton className="btn-ghost px-2.5 py-1.5 text-xs" />
         <Btn onClick={onSnapshot}>Save version</Btn>
-        <button className="btn-primary px-3 py-1.5 text-xs" onClick={onSuggest}>Re-run AI suggestions</button>
+        <button
+          className="btn-primary px-3 py-1.5 text-xs"
+          onClick={onSuggest}
+          disabled={suggesting}
+        >
+          {suggesting ? 'Suggesting…' : 'Re-run AI suggestions'}
+        </button>
       </div>
     </div>
   );

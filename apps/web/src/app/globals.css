@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+html, body { height: 100%; }
+body { @apply bg-slate-50 text-ink antialiased; font-family: Inter, system-ui, sans-serif; }
+
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition; }
+.btn-primary { @apply btn bg-brand text-white hover:bg-brand-600; }
+.btn-ghost { @apply btn border border-slate-200 bg-white hover:bg-slate-50; }
+.input { @apply w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20; }
+.card { @apply rounded-xl border border-slate-200 bg-white shadow-sm; }

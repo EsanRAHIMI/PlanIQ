@@ -1,0 +1,30 @@
+رای حالت دولوپ، خیلی ساده این‌ها رو در ۳ ترمینال بزن:
+
+ترمینال 1 (infra)
+cd /Users/ehsanrahimi/Works/Map/mapai
+pnpm dev:infra
+
+ترمینال 2 (API + Worker)
+cd /Users/ehsanrahimi/Works/Map/mapai
+pnpm dev:api
+
+ترمینال جداگانه برای worker:
+cd /Users/ehsanrahimi/Works/Map/mapai
+pnpm dev:worker
+
+ترمینال 3 (Web)
+cd /Users/ehsanrahimi/Works/Map/mapai
+pnpm dev:web
+
+اختیاری (AI با Docker)
+cd /Users/ehsanrahimi/Works/Map/mapai
+pnpm dev:ai:docker
+
+آدرس‌ها
+Web: http://localhost:3000
+API: http://localhost:4000/api/v1/health
+AI: http://localhost:8000/health
+برای خاموش کردن infra:
+
+
+pnpm dev:down

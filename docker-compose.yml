@@ -1,0 +1,127 @@
+# PlanIQ local stack (Docker).
+# Database: uses MONGO_URI from root .env (MongoDB Atlas). Local mongo is opt-in only:
+#   docker compose --profile local-mongo up -d mongo
+services:
+  mongo:
+    profiles: ["local-mongo"]
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27017:27017"]
+    volumes: ["mongo_data:/data/db", "./infra/mongo/rs-init.js:/docker-entrypoint-initdb.d/rs-init.js:ro"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "rs.status().ok || rs.initiate()"]
+      interval: 10s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # No host port — avoids clash with other stacks; api/worker use redis://redis:6379
+    volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: planiq
+      MINIO_ROOT_PASSWORD: planiq-secret
+    # 9100/9101 on host (9000/6379 often taken by Clickhouse/other Redis)
+    ports: ["9100:9000", "9101:9001"]
+    volumes: ["minio_data:/data"]
+
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "until (mc alias set m http://minio:9000 planiq planiq-secret) do sleep 2; done;
+      mc mb -p m/planiq 2>/dev/null || true;
+      mc anonymous set download m/planiq;
+      exit 0;"
+
+  ai:
+    build: ./services/ai
+    env_file: .env
+    ports: ["8000:8000"]
+    volumes: ["./services/ai/models:/app/models"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    command: ["node", "dist/main.js"]
+    env_file: .env
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Browser app runs on :3000 in this setup; keep CORS aligned.
+      WEB_ORIGIN: http://localhost:3000
+      S3_PUBLIC_URL: http://localhost:9100
+    depends_on:
+      redis:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+      ai:
+        condition: service_healthy
+    ports: ["4000:4000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  worker:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    command: ["node", "dist/worker.js"]
+    env_file: .env
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      S3_PUBLIC_URL: http://localhost:9100
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+      ai:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    env_file: .env
+    depends_on:
+      api:
+        condition: service_healthy
+    ports: ["3000:3000"]
+
+  nginx:
+    image: nginx:alpine
+    depends_on:
+      web:
+        condition: service_started
+      api:
+        condition: service_healthy
+    ports: ["81:80"]
+    volumes: ["./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"]
+
+volumes:
+  mongo_data:
+  redis_data:
+  minio_data:

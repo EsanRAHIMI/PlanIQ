@@ -1,0 +1,118 @@
+'use client';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import dynamic from 'next/dynamic';
+import { useParams } from 'next/navigation';
+import { api } from '@/lib/api';
+import { useEditor } from '@/features/editor/store';
+import { DeviceLibraryPanel, PropertiesPanel } from '@/components/editor/Panels';
+import { AiSummaryPanel } from '@/components/editor/AiSummaryPanel';
+import { Toolbar } from '@/components/editor/Toolbar';
+import type { AnalysisQcSummary, DeviceDef, Placement } from '@planiq/shared';
+
+const Canvas = dynamic(() => import('@/components/editor/Canvas').then((m) => m.Canvas), { ssr: false });
+
+export default function EditorPage() {
+  const { floorId } = useParams<{ floorId: string }>();
+  const [devices, setDevices] = useState<DeviceDef[]>([]);
+  const [floor, setFloor] = useState<any>(null);
+  const [rasterUrl, setRasterUrl] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [qcSummary, setQcSummary] = useState<AnalysisQcSummary | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const { load, takeDirty, moveSelected, undo, redo, duplicateSelected, deleteSelected, debugMode, setDebugMode } = useEditor();
+  const dirty = useEditor((s) => s.dirty);
+  const deleted = useEditor((s) => s.deleted);
+
+  const loadPlacements = useCallback(async (debug: boolean) => {
+    const pl = await api.get<{ placements: Placement[]; layers: any[]; qcSummary?: AnalysisQcSummary }>(
+      `/floors/${floorId}/placements${debug ? '?debug=1' : ''}`,
+    );
+    setQcSummary(pl.qcSummary ?? floor?.analysis?.qcSummary ?? null);
+    const placements = pl.placements.map((p: any) => ({ ...p, id: p._id ?? p.id }));
+    const layers = pl.layers.map((l: any) => ({ ...l, id: l._id ?? l.id }));
+    load(floorId, placements as any, layers);
+  }, [floorId, floor?.analysis?.qcSummary, load]);
+
+  useEffect(() => {
+    (async () => {
+      const [dev, flr] = await Promise.all([
+        api.get<DeviceDef[]>('/devices'),
+        api.get<any>(`/floors/${floorId}`),
+      ]);
+      setDevices(dev);
+      setFloor(flr);
+      setRasterUrl(flr.rasterUrl ?? null);
+      setQcSummary(flr.analysis?.qcSummary ?? null);
+      await loadPlacements(false);
+    })();
+  }, [floorId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    void loadPlacements(debugMode);
+  }, [debugMode, loadPlacements]);
+
+  useEffect(() => {
+    if (dirty.size === 0 && deleted.size === 0) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      const { upserts, deletes } = takeDirty();
+      if (!upserts.length && !deletes.length) return;
+      setSaving(true);
+      try {
+        await api.patch(`/floors/${floorId}/placements`, {
+          upserts: upserts.map((p: any) => ({ ...p, id: String(p.id).startsWith('loc_') ? undefined : p.id })),
+          deletes: deletes.filter((d) => !d.startsWith('loc_')),
+        });
+      } finally { setSaving(false); }
+    }, 800);
+    return () => clearTimeout(saveTimer.current);
+  }, [dirty, deleted, floorId, takeDirty]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'SELECT') return;
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
+      else if (meta && e.key === 'd') { e.preventDefault(); duplicateSelected(); }
+      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
+      else if (e.key === 'ArrowUp') moveSelected(0, -0.005);
+      else if (e.key === 'ArrowDown') moveSelected(0, 0.005);
+      else if (e.key === 'ArrowLeft') moveSelected(-0.005, 0);
+      else if (e.key === 'ArrowRight') moveSelected(0.005, 0);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, redo, duplicateSelected, deleteSelected, moveSelected]);
+
+  const onSuggest = useCallback(async () => {
+    const { placements, summary } = await api.post<{ placements: Placement[]; summary: AnalysisQcSummary }>(
+      `/floors/${floorId}/placements/suggest`,
+    );
+    setQcSummary(summary);
+    const current = useEditor.getState().placements;
+    const merged = [...Object.values(current), ...placements] as Placement[];
+    load(floorId, merged, useEditor.getState().layers);
+  }, [floorId, load]);
+
+  const onSnapshot = useCallback(async () => {
+    const label = prompt('Version label?') ?? undefined;
+    await api.post(`/floors/${floorId}/versions`, { label });
+    alert('Version saved.');
+  }, [floorId]);
+
+  return (
+    <div className="flex h-screen flex-col">
+      <Toolbar floorName={floor?.name ?? 'Editor'} saving={saving} onSuggest={onSuggest} onSnapshot={onSnapshot} />
+      <div className="flex flex-1 overflow-hidden">
+        <DeviceLibraryPanel devices={devices} />
+        <div className="flex flex-1 flex-col">
+          <Canvas rasterUrl={rasterUrl} width={floor?.raster?.width ?? 1200} height={floor?.raster?.height ?? 900} />
+          <AiSummaryPanel summary={qcSummary} debugMode={debugMode} onToggleDebug={() => setDebugMode(!debugMode)} />
+        </div>
+        <PropertiesPanel devices={devices} />
+      </div>
+    </div>
+  );
+}

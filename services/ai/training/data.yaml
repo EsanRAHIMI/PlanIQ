@@ -1,0 +1,21 @@
+# YOLOv11 dataset config for architectural plan symbol detection.
+# Layout (YOLO format):
+#   training/dataset/images/{train,val}/*.png
+#   training/dataset/labels/{train,val}/*.txt   (class cx cy w h, normalized)
+path: ./dataset
+train: images/train
+val: images/val
+names:
+  0: door
+  1: double_door
+  2: window
+  3: gate
+  4: stair
+  5: lift
+  6: parking_symbol
+  7: north_arrow
+  8: existing_camera
+  9: existing_ap
+  10: sink
+  11: wc
+  12: tree

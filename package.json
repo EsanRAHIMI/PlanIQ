@@ -1,0 +1,34 @@
+{
+  "name": "planiq",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PlanIQ — automatic smart-home / ELV / CCTV / Wi-Fi device placement on villa floor plans",
+  "packageManager": "pnpm@9.6.0",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "turbo run dev",
+    "dev:infra": "docker compose -f docker-compose.infra.yml up -d",
+    "dev:api": "pnpm --filter @planiq/api dev",
+    "dev:worker": "pnpm --filter @planiq/api worker",
+    "dev:web": "pnpm --filter @planiq/web dev",
+    "dev:ai:docker": "docker compose up -d ai",
+    "dev:down": "docker compose -f docker-compose.infra.yml down",
+    "dev:check": "sh -c 'curl -fsS http://localhost:3000 >/dev/null && curl -fsS http://localhost:4000/api/v1/health >/dev/null && curl -fsS http://localhost:8000/health >/dev/null && curl -fsS http://localhost:9100/minio/health/live >/dev/null && echo \"dev services healthy\"'",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "seed": "pnpm --filter @planiq/api seed",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "turbo": "^2.0.9",
+    "typescript": "^5.5.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "ioredis": "5.10.1"
+    }
+  }
+}

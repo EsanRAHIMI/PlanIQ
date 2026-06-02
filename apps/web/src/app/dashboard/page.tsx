@@ -1,0 +1,79 @@
+'use client';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { api, loadToken } from '@/lib/api';
+
+export default function Dashboard() {
+  // Local dev smoke marker: verifies Next.js hot-reload without Docker rebuild.
+  const router = useRouter();
+  const [projects, setProjects] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState('');
+  const [createError, setCreateError] = useState('');
+
+  async function refresh() {
+    try { const r = await api.get<{ items: any[] }>('/projects'); setProjects(r.items); }
+    catch { router.push('/login'); } finally { setLoading(false); }
+  }
+  useEffect(() => { if (!loadToken()) { router.push('/login'); return; } refresh(); }, []);
+
+  async function create(e: React.FormEvent) {
+    e.preventDefault(); if (!name.trim()) return;
+    setCreateError('');
+    try {
+      const p = await api.post<any>('/projects', { name: name.trim(), units: 'm' });
+      setName(''); setCreating(false);
+      router.push(`/projects/${p._id}`);
+    } catch (err: any) {
+      const details = err?.detail?.details;
+      if (Array.isArray(details) && details.length > 0) {
+        const first = details[0];
+        const msg = first?.issue || first?.message || first?.path?.join?.('.') || 'Validation failed';
+        setCreateError(msg);
+      } else {
+        setCreateError(err?.message ?? 'Validation failed');
+      }
+    }
+  }
+
+  return (
+    <main className="mx-auto max-w-6xl px-6 py-10">
+      <header className="flex items-center justify-between">
+        <div>
+          <div className="text-xs font-bold tracking-widest text-brand">PLANIQ</div>
+          <h1 className="text-2xl font-bold">Projects</h1>
+        </div>
+        <button className="btn-primary" onClick={() => setCreating(true)}>New project</button>
+      </header>
+
+      {creating && (
+        <form onSubmit={create} className="card mt-6 flex gap-3 p-4">
+          <input autoFocus className="input" placeholder="Project name (e.g. Proposed Villa G+1)" value={name} onChange={(e) => setName(e.target.value)} />
+          {createError && <p className="text-sm text-brand self-center">{createError}</p>}
+          <button className="btn-primary">Create</button>
+          <button type="button" className="btn-ghost" onClick={() => setCreating(false)}>Cancel</button>
+        </form>
+      )}
+
+      {loading ? <p className="mt-10 text-slate-500">Loading…</p> : (
+        <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {projects.map((p) => (
+            <Link key={p._id} href={`/projects/${p._id}`} className="card p-5 transition hover:shadow-md">
+              <div className="flex items-start justify-between">
+                <div className="font-semibold">{p.name}</div>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs">{p.status}</span>
+              </div>
+              <div className="mt-1 text-sm text-slate-500">{p.code ?? '—'} · {p.client?.name ?? 'No client'}</div>
+              <div className="mt-4 flex gap-4 text-xs text-slate-500">
+                <span>{p.stats?.floors ?? 0} floors</span><span>{p.stats?.devices ?? 0} devices</span>
+              </div>
+            </Link>
+          ))}
+          {!projects.length && <p className="text-slate-500">No projects yet. Create one to get started.</p>}
+        </div>
+      )}
+    </main>
+  );
+}

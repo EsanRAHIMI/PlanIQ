@@ -14,7 +14,29 @@ export const roomSchema = z.object({
   confidence: z.number().min(0).max(1),
   source: z.enum(['cv', 'manual']),
   reviewed: z.boolean().optional(),
+  reviewStatus: z.enum(['ai_detected', 'rejected', 'accepted', 'user_corrected']).optional(),
+  aiType: z.enum(ROOM_TYPES).nullable().optional(),
+  aiConfidence: z.number().nullable().optional(),
+  rejectionReason: z.string().nullable().optional(),
+  meta: z.record(z.unknown()).optional(),
 });
+
+/** Body for manual space creation / room edits from the editor's Spaces panel. */
+export const createRoomSchema = z.object({
+  type: z.enum(ROOM_TYPES),
+  label: z.string().optional(),
+  polygon: z.array(z.array(z.number())).optional(),
+  centroid: z.tuple([z.number(), z.number()]).optional(),
+  area: z.number().optional(),
+});
+
+export const updateRoomSchema = z.object({
+  type: z.enum(ROOM_TYPES).optional(),
+  label: z.string().optional(),
+  reviewStatus: z.enum(['ai_detected', 'rejected', 'accepted', 'user_corrected']).optional(),
+  centroid: z.tuple([z.number(), z.number()]).optional(),
+  polygon: z.array(z.array(z.number())).optional(),
+}).refine((b) => Object.keys(b).length > 0, { message: 'No fields to update' });
 
 export const zoneSchema = z.object({
   id: z.string().optional(),

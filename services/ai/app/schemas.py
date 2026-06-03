@@ -15,6 +15,9 @@ class Room(BaseModel):
     confidence: float = Field(ge=0, le=1)
     source: Literal["cv", "manual"] = "cv"
     reviewed: bool = False
+    # Carries qcStatus / rejectionReason so the API can persist rejected spaces
+    # for user review instead of silently dropping them.
+    meta: Dict[str, Any] = {}
 
 
 class ZoneGeometry(BaseModel):

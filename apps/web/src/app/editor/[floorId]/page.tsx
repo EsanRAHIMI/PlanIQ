@@ -314,7 +314,7 @@ export default function EditorPage() {
         floorId={floorId}
         open={versionsOpen}
         onClose={() => setVersionsOpen(false)}
-        onRestored={() => loadPlacements(debugMode)}
+        onRestored={() => { void loadPlacements(debugMode); }}
       />
       <div className="flex flex-1 overflow-hidden">
         <DeviceLibraryPanel devices={devices} />

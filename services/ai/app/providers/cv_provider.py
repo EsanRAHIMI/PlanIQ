@@ -52,10 +52,14 @@ class CvProvider(VisionProvider):
             warnings.append(f"QC rejected {len(rejected_placements)} device suggestions (see summary)")
 
         confidences = [r["confidence"] for r in accepted_rooms] or [0.4]
+        # Return BOTH accepted and rejected spaces so the user can review and recover
+        # rejected ones in the editor. meta.qcStatus / rejectionReason distinguish them;
+        # the API derives reviewStatus from meta and uses only non-rejected for placement.
+        all_rooms = accepted_rooms + rejected_rooms
         return AnalysisResult(
             floorId=floor_id,
             image={"width": int(pp["w"]), "height": int(pp["h"])},
-            rooms=accepted_rooms, zones=zones,
+            rooms=all_rooms, zones=zones,
             detections=[{"class": d["class"], "bbox": d["bbox"], "confidence": d["confidence"]} for d in detections],
             placements=placements,
             confidence=round(sum(confidences) / len(confidences), 3),

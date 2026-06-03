@@ -14,6 +14,10 @@ import { ZodValidationPipe } from '../../common/zod.pipe';
 import { CurrentUser, AuthUser } from '../../common/decorators';
 
 function normalizeRoom(r: any) {
+  // User-reviewed spaces (accepted / corrected / manual) are authoritative — bump their
+  // confidence so the QC room filter keeps them rather than re-rejecting on stale CV scores.
+  const userReviewed = r.source === 'manual' || r.reviewStatus === 'accepted' || r.reviewStatus === 'user_corrected';
+  const conf = typeof r.confidence === 'number' ? r.confidence : 0.6;
   return {
     label: r.label ?? 'Space',
     rawLabel: r.rawLabel,
@@ -21,9 +25,9 @@ function normalizeRoom(r: any) {
     polygon: r.polygon ?? [],
     centroid: Array.isArray(r.centroid) ? r.centroid : [0.5, 0.5],
     area: typeof r.area === 'number' ? r.area : 0.05,
-    confidence: typeof r.confidence === 'number' ? r.confidence : 0.6,
+    confidence: userReviewed ? Math.max(conf, 0.9) : conf,
     source: r.source ?? 'cv',
-    reviewed: r.reviewed ?? false,
+    reviewed: r.reviewed ?? userReviewed,
   };
 }
 
@@ -114,20 +118,25 @@ export class PlacementsService {
       startedAt,
     });
 
+    // Re-suggest from the user's reviewed picture: only ACTIVE (non-rejected) spaces feed
+    // the rule engine, so corrections and accept/reject decisions drive the placements.
     const [roomsRaw, zonesRaw] = await Promise.all([
-      this.rooms.find({ floorId, tenantId: user.tenantId }).lean(),
+      this.rooms.find({ floorId, tenantId: user.tenantId, reviewStatus: { $ne: 'rejected' } }).lean(),
       this.zones.find({ floorId, tenantId: user.tenantId }).lean(),
     ]);
 
     if (!roomsRaw.length) {
+      const anyRooms = await this.rooms.countDocuments({ floorId, tenantId: user.tenantId });
       await this.analysisRuns.updateOne({ _id: run._id }, {
         status: 'failed',
         finishedAt: new Date(),
         durationMs: Date.now() - startedAt.getTime(),
-        errors: ['No detected rooms on this floor'],
+        errors: [anyRooms ? 'All spaces are rejected' : 'No detected rooms on this floor'],
       });
       throw new BadRequestException(
-        'No detected rooms on this floor. Upload a plan or run floor analysis before re-suggesting devices.',
+        anyRooms
+          ? 'All spaces on this floor are rejected. Accept or add at least one space, then re-run suggestions.'
+          : 'No detected spaces on this floor. Run Full AI Analysis or add spaces manually before re-suggesting devices.',
       );
     }
 

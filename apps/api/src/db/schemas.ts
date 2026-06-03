@@ -105,6 +105,18 @@ export const DetectedRoomSchema = new Schema({
   confidence: Number,
   source: { type: String, enum: ['cv', 'manual'], default: 'cv' },
   reviewed: { type: Boolean, default: false },
+  // Review lifecycle — keeps AI-detected spaces separate from user-reviewed ones.
+  reviewStatus: {
+    type: String,
+    enum: ['ai_detected', 'rejected', 'accepted', 'user_corrected'],
+    default: 'ai_detected',
+    index: true,
+  },
+  aiType: { type: String, default: null },          // original AI classification, preserved on correction
+  aiConfidence: { type: Number, default: null },
+  rejectionReason: { type: String, default: null }, // QC reason when reviewStatus === 'rejected'
+  reviewedBy: oid,
+  reviewedAt: Date,
   meta: { type: Schema.Types.Mixed, default: {} },
 }, opts);
 

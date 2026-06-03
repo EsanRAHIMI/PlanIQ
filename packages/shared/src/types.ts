@@ -2,6 +2,16 @@ import type { RoomType, ZoneType } from './space-types';
 
 export type Point = { x: number; y: number };
 
+/**
+ * Lifecycle of a detected space:
+ * - ai_detected   : found by the CV pipeline and QC-accepted, awaiting user review
+ * - rejected      : withheld by QC (low confidence/area) or rejected by the user — not used for placement
+ * - accepted      : user confirmed the space (incl. recovering a QC-rejected one or a manual add)
+ * - user_corrected: user changed the space type (implies active)
+ * Active-for-placement = any status except `rejected`.
+ */
+export type RoomReviewStatus = 'ai_detected' | 'rejected' | 'accepted' | 'user_corrected';
+
 export interface Room {
   id?: string;
   label: string;
@@ -13,7 +23,18 @@ export interface Room {
   confidence: number;
   source: 'cv' | 'manual';
   reviewed?: boolean;
+  /** Review lifecycle — keeps AI output separate from user-reviewed state. */
+  reviewStatus?: RoomReviewStatus;
+  /** Original AI classification, preserved when the user corrects the type. */
+  aiType?: RoomType | null;
+  aiConfidence?: number | null;
+  /** QC reason when reviewStatus is `rejected`. */
+  rejectionReason?: string | null;
+  meta?: Record<string, unknown>;
 }
+
+export const ROOM_ACTIVE_FOR_PLACEMENT = (r: { reviewStatus?: RoomReviewStatus }): boolean =>
+  r.reviewStatus !== 'rejected';
 
 export interface Zone {
   id?: string;

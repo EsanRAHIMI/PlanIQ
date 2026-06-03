@@ -202,11 +202,29 @@ async function handleAnalyze(data: any) {
   const counts = countsFromQcSummary(result.qcSummary);
 
   await progress(data.floorId, 'persist', 75, 'Saving suggestions');
-  await M.DetectedRoom.deleteMany({ floorId: floor._id });
+  // Re-analysis re-detects spaces: replace CV-detected rooms but PRESERVE the user's
+  // manual rooms (source 'manual') so their work survives a re-run.
+  await M.DetectedRoom.deleteMany({ floorId: floor._id, source: { $ne: 'manual' } });
   await M.DetectedZone.deleteMany({ floorId: floor._id });
   await M.Placement.deleteMany({ floorId: floor._id, source: 'ai', reviewed: false });
 
-  if (result.rooms?.length) await M.DetectedRoom.insertMany(result.rooms.map((r: any) => ({ ...r, tenantId: floor.tenantId, floorId: floor._id })));
+  // Map each space to a review lifecycle status, keeping AI output separate from
+  // user-reviewed state. Rejected spaces are persisted (not dropped) for user review.
+  const roomDocs = (result.rooms ?? []).map((r: any) => {
+    const rejected = r.meta?.qcStatus === 'rejected';
+    return {
+      ...r,
+      tenantId: floor.tenantId,
+      floorId: floor._id,
+      source: r.source ?? 'cv',
+      reviewStatus: rejected ? 'rejected' : 'ai_detected',
+      aiType: r.type ?? null,
+      aiConfidence: typeof r.confidence === 'number' ? r.confidence : null,
+      rejectionReason: rejected ? (r.meta?.rejectionReason ?? 'Withheld by quality control') : null,
+    };
+  });
+  const acceptedRoomCount = roomDocs.filter((r: any) => r.reviewStatus !== 'rejected').length;
+  if (roomDocs.length) await M.DetectedRoom.insertMany(roomDocs);
   if (result.zones?.length) await M.DetectedZone.insertMany(result.zones.map((z: any) => ({ ...z, tenantId: floor.tenantId, floorId: floor._id })));
   if (result.placements?.length) await M.Placement.insertMany(result.placements.map((p: any) => ({
     ...p, _id: undefined, tenantId: floor.tenantId, floorId: floor._id, projectId: floor.projectId,
@@ -232,7 +250,7 @@ async function handleAnalyze(data: any) {
     errors: result.errors ?? [],
   });
 
-  floor.counts = { rooms: result.rooms?.length ?? 0, placements: acceptedCount };
+  floor.counts = { rooms: acceptedRoomCount, placements: acceptedCount };
   floor.analysis = {
     status: 'done',
     confidence: result.confidence,

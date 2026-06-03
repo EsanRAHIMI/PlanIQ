@@ -6,6 +6,22 @@ import type { Placement } from '@planiq/shared';
 
 enableMapSet();
 
+/** Detected/edited space as stored in Mongo (loose shape: carries _id from the API). */
+export interface RoomDoc {
+  _id?: string;
+  id?: string;
+  label?: string;
+  type: string;
+  polygon: number[][];
+  centroid: [number, number] | number[];
+  area?: number;
+  confidence?: number;
+  source?: 'cv' | 'manual';
+  reviewStatus?: 'ai_detected' | 'rejected' | 'accepted' | 'user_corrected';
+  aiType?: string | null;
+  rejectionReason?: string | null;
+}
+
 /** Editor state with an undo/redo command stack and debounced-dirty tracking. */
 interface HistoryEntry { placements: Record<string, Placement>; }
 
@@ -21,6 +37,16 @@ interface EditorState {
   zoom: number;
   debugMode: boolean;
   setDebugMode: (v: boolean) => void;
+  // detected spaces (reviewed via API, not part of placement undo history)
+  rooms: RoomDoc[];
+  roomsVisible: boolean;
+  selectedRoomId: string | null;
+  setRooms: (rooms: RoomDoc[]) => void;
+  setRoomsVisible: (v: boolean) => void;
+  selectRoom: (id: string | null) => void;
+  patchRoomLocal: (id: string, patch: Partial<RoomDoc>) => void;
+  removeRoomLocal: (id: string) => void;
+  upsertRoomLocal: (room: RoomDoc) => void;
   // setup
   load: (floorId: string, placements: Placement[], layers: any[]) => void;
   // selection
@@ -51,9 +77,29 @@ const uid = () => `loc_${Math.random().toString(36).slice(2, 10)}`;
 export const useEditor = create<EditorState>((set, get) => ({
   floorId: null, placements: {}, layers: [], selectedIds: [], past: [], future: [],
   dirty: new Set(), deleted: new Set(), zoom: 1, debugMode: false,
+  rooms: [], roomsVisible: true, selectedRoomId: null,
+
+  setRooms: (rooms) => set({ rooms }),
+  setRoomsVisible: (roomsVisible) => set({ roomsVisible }),
+  selectRoom: (selectedRoomId) => set({ selectedRoomId }),
+  patchRoomLocal: (id, patch) => set(produce((s: EditorState) => {
+    const i = s.rooms.findIndex((r) => (r._id ?? r.id) === id);
+    if (i >= 0) Object.assign(s.rooms[i], patch);
+  })),
+  removeRoomLocal: (id) => set(produce((s: EditorState) => {
+    s.rooms = s.rooms.filter((r) => (r._id ?? r.id) !== id);
+    if (s.selectedRoomId === id) s.selectedRoomId = null;
+  })),
+  upsertRoomLocal: (room) => set(produce((s: EditorState) => {
+    const id = room._id ?? room.id;
+    const i = s.rooms.findIndex((r) => (r._id ?? r.id) === id);
+    if (i >= 0) s.rooms[i] = room;
+    else s.rooms.push(room);
+  })),
 
   load: (floorId, placements, layers) => set({
     floorId, layers, selectedIds: [], past: [], future: [], dirty: new Set(), deleted: new Set(),
+    rooms: [], selectedRoomId: null,
     placements: Object.fromEntries(placements.map((p) => [p.id ?? uid(), p])),
   }),
 

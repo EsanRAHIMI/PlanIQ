@@ -51,6 +51,12 @@ export const ProjectSchema = new Schema({
   ownerId: { type: oid, ref: 'User', required: true },
   members: [{ userId: { type: oid, ref: 'User' }, role: { type: String, enum: ['manager', 'editor', 'viewer'] }, addedAt: { type: Date, default: Date.now } }],
   cover: { assetKey: String },
+  delivery: {
+    status: { type: String, enum: ['draft', 'ready', 'exported', 'delivered'], default: 'draft' },
+    deliveredAt: Date,
+    updatedBy: oid,
+    updatedAt: Date,
+  },
   stats: { floors: { type: Number, default: 0 }, devices: { type: Number, default: 0 }, lastExportAt: Date },
 }, opts);
 ProjectSchema.index({ tenantId: 1, status: 1 });
@@ -166,7 +172,11 @@ export const ExportSchema = new Schema({
   projectId: { type: oid, required: true, index: true },
   status: { type: String, enum: ['queued', 'processing', 'done', 'failed'], default: 'queued' },
   jobId: String,
-  options: { floors: [oid], includeLegend: Boolean, includeSchedule: Boolean, notes: String },
+  options: {
+    floors: [oid], includeLegend: Boolean, includeSchedule: Boolean, includeAiSummary: Boolean,
+    style: { type: String, enum: ['standard', 'detailed'], default: 'standard' },
+    clientName: String, preparedBy: String, notes: String, versionName: String,
+  },
   s3Key: String, pages: Number, sizeBytes: Number, error: String, finishedAt: Date,
   createdBy: oid,
 }, opts);

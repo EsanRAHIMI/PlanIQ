@@ -3,10 +3,9 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api, loadToken, ApiError } from '@/lib/api';
-import { LogoutButton } from '@/components/LogoutButton';
+import { AppHeader } from '@/components/AppHeader';
 
 export default function Dashboard() {
-  // Local dev smoke marker: verifies Next.js hot-reload without Docker rebuild.
   const router = useRouter();
   const [projects, setProjects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -25,7 +24,10 @@ export default function Dashboard() {
       setLoading(false);
     }
   }
-  useEffect(() => { if (!loadToken()) { router.push('/login'); return; } refresh(); }, []);
+  useEffect(() => {
+    if (!loadToken()) { router.push('/login'); return; }
+    refresh();
+  }, []);
 
   async function create(e: React.FormEvent) {
     e.preventDefault(); if (!name.trim()) return;
@@ -47,17 +49,13 @@ export default function Dashboard() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl px-6 py-10">
-      <header className="flex items-center justify-between">
-        <div>
-          <div className="text-xs font-bold tracking-widest text-brand">PLANIQ</div>
-          <h1 className="text-2xl font-bold">Projects</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="btn-primary" onClick={() => setCreating(true)}>New project</button>
-          <LogoutButton />
-        </div>
-      </header>
+    <>
+      <AppHeader breadcrumbs={[{ label: 'Projects' }]} />
+      <main className="mx-auto max-w-6xl px-6 py-8">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-slate-900">Projects</h1>
+        <button className="btn-primary" onClick={() => setCreating(true)}>New project</button>
+      </div>
 
       {creating && (
         <form onSubmit={create} className="card mt-6 flex gap-3 p-4">
@@ -85,6 +83,7 @@ export default function Dashboard() {
           {!projects.length && <p className="text-slate-500">No projects yet. Create one to get started.</p>}
         </div>
       )}
-    </main>
+      </main>
+    </>
   );
 }

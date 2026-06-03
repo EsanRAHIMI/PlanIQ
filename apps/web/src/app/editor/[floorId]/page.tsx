@@ -1,28 +1,32 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { api, formatApiError } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { useEditor } from '@/features/editor/store';
 import { DeviceLibraryPanel, PropertiesPanel } from '@/components/editor/Panels';
 import { AiSummaryPanel } from '@/components/editor/AiSummaryPanel';
 import { Toolbar } from '@/components/editor/Toolbar';
+import { VersionsModal } from '@/components/editor/VersionsModal';
 import type { AnalysisQcSummary, DeviceDef, Placement } from '@planiq/shared';
 
 const Canvas = dynamic(() => import('@/components/editor/Canvas').then((m) => m.Canvas), { ssr: false });
 
 export default function EditorPage() {
   const { floorId } = useParams<{ floorId: string }>();
+  const router = useRouter();
   const [devices, setDevices] = useState<DeviceDef[]>([]);
   const [floor, setFloor] = useState<any>(null);
+  const [floors, setFloors] = useState<any[]>([]);
   const [rasterUrl, setRasterUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [qcSummary, setQcSummary] = useState<AnalysisQcSummary | null>(null);
   const [suggesting, setSuggesting] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
 
-  const { load, takeDirty, moveSelected, undo, redo, duplicateSelected, deleteSelected, debugMode, setDebugMode } = useEditor();
+  const { load, takeDirty, moveSelected, undo, redo, duplicateSelected, deleteSelected, clearSelection, debugMode, setDebugMode } = useEditor();
   const dirty = useEditor((s) => s.dirty);
   const deleted = useEditor((s) => s.deleted);
 
@@ -47,6 +51,9 @@ export default function EditorPage() {
         setFloor(flr);
         setRasterUrl(flr.rasterUrl ?? null);
         setQcSummary(flr.analysis?.qcSummary ?? null);
+        if (flr.projectId) {
+          api.get<any[]>(`/projects/${flr.projectId}/floors`).then(setFloors).catch(() => {});
+        }
         await loadPlacements(false);
       } catch {
         // Auth failures handled globally in api.ts (toast + redirect).
@@ -58,24 +65,35 @@ export default function EditorPage() {
     void loadPlacements(debugMode);
   }, [debugMode, loadPlacements]);
 
+  /** Flush pending edits immediately. Reused by the debounce and before navigation. */
+  const saveNow = useCallback(async () => {
+    const { upserts, deletes } = takeDirty();
+    if (!upserts.length && !deletes.length) return;
+    setSaving(true);
+    try {
+      await api.patch(`/floors/${floorId}/placements`, {
+        upserts: upserts.map((p: any) => ({ ...p, id: String(p.id).startsWith('loc_') ? undefined : p.id })),
+        deletes: deletes.filter((d) => !d.startsWith('loc_')),
+      });
+    } catch {
+      // Auth errors handled in api.ts; avoid unhandled rejection.
+    } finally { setSaving(false); }
+  }, [floorId, takeDirty]);
+
   useEffect(() => {
     if (dirty.size === 0 && deleted.size === 0) return;
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      const { upserts, deletes } = takeDirty();
-      if (!upserts.length && !deletes.length) return;
-      setSaving(true);
-      try {
-        await api.patch(`/floors/${floorId}/placements`, {
-          upserts: upserts.map((p: any) => ({ ...p, id: String(p.id).startsWith('loc_') ? undefined : p.id })),
-          deletes: deletes.filter((d) => !d.startsWith('loc_')),
-        });
-      } catch {
-        // Auth errors handled in api.ts; avoid unhandled rejection.
-      } finally { setSaving(false); }
-    }, 800);
+    saveTimer.current = setTimeout(() => { void saveNow(); }, 800);
     return () => clearTimeout(saveTimer.current);
-  }, [dirty, deleted, floorId, takeDirty]);
+  }, [dirty, deleted, saveNow]);
+
+  /** Persist pending edits, then switch floors. */
+  const onSelectFloor = useCallback(async (id: string) => {
+    if (!id || id === floorId) return;
+    clearTimeout(saveTimer.current);
+    await saveNow();
+    router.push(`/editor/${id}`);
+  }, [floorId, saveNow, router]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -85,6 +103,7 @@ export default function EditorPage() {
       else if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
       else if (meta && e.key === 'd') { e.preventDefault(); duplicateSelected(); }
       else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
+      else if (e.key === 'Escape') { clearSelection(); }
       else if (e.key === 'ArrowUp') moveSelected(0, -0.005);
       else if (e.key === 'ArrowDown') moveSelected(0, 0.005);
       else if (e.key === 'ArrowLeft') moveSelected(-0.005, 0);
@@ -92,7 +111,7 @@ export default function EditorPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, duplicateSelected, deleteSelected, moveSelected]);
+  }, [undo, redo, duplicateSelected, deleteSelected, clearSelection, moveSelected]);
 
   const onSuggest = useCallback(async () => {
     setSuggesting(true);
@@ -120,12 +139,6 @@ export default function EditorPage() {
     }
   }, [floorId, loadPlacements]);
 
-  const onSnapshot = useCallback(async () => {
-    const label = prompt('Version label?') ?? undefined;
-    await api.post(`/floors/${floorId}/versions`, { label });
-    alert('Version saved.');
-  }, [floorId]);
-
   return (
     <div className="flex h-screen flex-col">
       <Toolbar
@@ -133,7 +146,17 @@ export default function EditorPage() {
         saving={saving}
         suggesting={suggesting}
         onSuggest={onSuggest}
-        onSnapshot={onSnapshot}
+        onVersions={() => setVersionsOpen(true)}
+        floors={floors}
+        currentFloorId={floorId}
+        onSelectFloor={onSelectFloor}
+        projectHref={floor?.projectId ? `/projects/${floor.projectId}` : undefined}
+      />
+      <VersionsModal
+        floorId={floorId}
+        open={versionsOpen}
+        onClose={() => setVersionsOpen(false)}
+        onRestored={() => loadPlacements(debugMode)}
       />
       <div className="flex flex-1 overflow-hidden">
         <DeviceLibraryPanel devices={devices} />

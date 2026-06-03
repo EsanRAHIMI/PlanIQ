@@ -10,6 +10,7 @@ import { Worker, Queue } from 'bullmq';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
+import { AI_SETTINGS_KEY, normalizeAiSettings } from '@planiq/shared';
 import config from './config/configuration';
 import {
   extractHost,
@@ -111,9 +112,26 @@ async function handleAnalyze(data: any) {
 
   const imageUrl = await presignGet(floor.raster.key);
   await progress(data.floorId, 'detect', 40, 'Detecting rooms & symbols');
+
+  // Tenant AI/QC settings (admin-tunable) forwarded so changes actually affect output.
+  const settingDoc = await M.Setting.findOne({ scope: 'tenant', tenantId: floor.tenantId, key: AI_SETTINGS_KEY }).lean();
+  const aiSettings = normalizeAiSettings((settingDoc as any)?.value);
+  const provider = data.provider
+    ?? (aiSettings.fallbackProvider !== 'disabled' ? 'llm_fallback' : 'cv');
+
   const res = await fetch(`${cfg.ai.url}/analyze`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ imageUrl, floorId: data.floorId, units: 'm', provider: data.provider ?? 'cv', fallbackProvider: cfg.ai.fallbackProvider }),
+    body: JSON.stringify({
+      imageUrl, floorId: data.floorId, units: 'm',
+      provider, fallbackProvider: aiSettings.fallbackProvider,
+      qc: {
+        maxRoomsPerFloor: aiSettings.maxRoomsPerFloor,
+        maxDevicesPerFloor: aiSettings.maxDevicesPerFloor,
+        maxDevicesPerRoom: aiSettings.maxDevicesPerRoom,
+        minRoomConfidence: aiSettings.minRoomConfidence,
+        minDeviceConfidence: aiSettings.minDeviceConfidence,
+      },
+    }),
   });
   if (!res.ok) { floor.analysis = { ...floor.analysis, status: 'failed', error: `AI ${res.status}` }; await floor.save(); throw new Error(`analyze ${res.status}`); }
   const result = await res.json();
@@ -156,22 +174,37 @@ async function handleExport(data: any) {
   if (!exp) return;
   exp.status = 'processing'; await exp.save();
   try {
-    const project = await M.Project.findById(data.projectId).lean();
-    const floorFilter: any = { projectId: data.projectId };
+    const tenantId = exp.tenantId; // tenant-scope every read (defense in depth)
+    const project = await M.Project.findOne({ _id: data.projectId, tenantId }).lean();
+    if (!project) throw new Error('Project not found for tenant');
+    const floorFilter: any = { projectId: data.projectId, tenantId };
     if (exp.options?.floors?.length) floorFilter._id = { $in: exp.options.floors };
     const floors = await M.Floor.find(floorFilter).sort({ level: 1 }).lean();
     const data_ = await Promise.all(floors.map(async (f: any) => ({
       floor: f,
       rasterUrl: f.raster?.key ? await presignGet(f.raster.key) : null,
-      placements: await M.Placement.find({ floorId: f._id }).lean(),
+      placements: await M.Placement.find({ floorId: f._id, tenantId }).lean(),
+      layers: await M.Layer.find({ floorId: f._id, tenantId }).sort({ order: 1 }).lean(),
     })));
     const devices = await M.DeviceLibrary.find({ enabled: true }).lean();
-    const pdf = await renderProjectPdf({ project, floors: data_, devices, options: exp.options });
+    const preparer = exp.createdBy ? await M.User.findById(exp.createdBy).lean() : null;
+    const pdf = await renderProjectPdf({
+      project, floors: data_, devices, options: exp.options,
+      preparedBy: exp.options?.preparedBy ?? (preparer as any)?.name ?? null,
+    });
     const key = `${exp.tenantId}/${data.projectId}/export/${randomUUID()}.pdf`;
     await putBuffer(key, pdf, 'application/pdf');
     exp.status = 'done'; exp.s3Key = key; exp.pages = floors.length + 1; exp.sizeBytes = pdf.length; exp.finishedAt = new Date();
     await exp.save();
-    await M.Project.updateOne({ _id: data.projectId }, { 'stats.lastExportAt': new Date() });
+    // Advance delivery lifecycle to "exported" (unless already delivered).
+    await M.Project.updateOne(
+      { _id: data.projectId, 'delivery.status': { $ne: 'delivered' } },
+      { $set: { 'stats.lastExportAt': new Date(), 'delivery.status': 'exported', 'delivery.updatedAt': new Date() } },
+    );
+    await M.Project.updateOne(
+      { _id: data.projectId, 'delivery.status': 'delivered' },
+      { $set: { 'stats.lastExportAt': new Date() } },
+    );
   } catch (e: any) {
     exp.status = 'failed'; exp.error = e?.message; await exp.save(); throw e;
   }
@@ -208,6 +241,12 @@ async function main() {
   }, { connection, concurrency: 4 });
 
   new Worker('export', async (job) => handleExport(job.data), { connection, concurrency: 2 });
+
+  // Liveness heartbeat consumed by the admin health endpoint (key TTL > interval).
+  const beat = () => connection.set('worker:heartbeat', JSON.stringify({ at: Date.now(), pid: process.pid }), 'EX', 60)
+    .catch((e) => console.error('[worker] heartbeat failed', e?.message));
+  await beat();
+  setInterval(beat, 15000).unref();
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

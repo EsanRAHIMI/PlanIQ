@@ -13,7 +13,7 @@ from ..rules.quality import filter_rooms, apply_placement_qc, build_summary
 
 
 class CvProvider(VisionProvider):
-    def analyze(self, bgr: np.ndarray, floor_id=None) -> AnalysisResult:
+    def analyze(self, bgr: np.ndarray, floor_id=None, qc=None) -> AnalysisResult:
         warnings = []
         pp = preprocess(bgr)
         walls = extract_walls(pp["binary"])
@@ -28,11 +28,11 @@ class CvProvider(VisionProvider):
             warnings.append("symbol detector returned nothing (untrained weights?)")
 
         raw_rooms, zones = fuse(rooms_geo, texts, detections)
-        accepted_rooms, rejected_rooms, room_rejections = filter_rooms(raw_rooms)
+        accepted_rooms, rejected_rooms, room_rejections = filter_rooms(raw_rooms, qc)
 
         raw_placements = suggest(accepted_rooms, zones)
         accepted_placements, rejected_placements, placement_rejections = apply_placement_qc(
-            raw_placements, accepted_rooms,
+            raw_placements, accepted_rooms, qc,
         )
         placements = accepted_placements + rejected_placements
 

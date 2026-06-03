@@ -30,7 +30,7 @@ class LlmFallbackProvider(VisionProvider):
         buf = io.BytesIO(); img.save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode()
 
-    def analyze(self, bgr: np.ndarray, floor_id=None) -> AnalysisResult:
+    def analyze(self, bgr: np.ndarray, floor_id=None, qc=None) -> AnalysisResult:
         rooms, zones, warnings = [], [], ["LLM fallback used"]
         try:
             rooms, zones = self._call(self._png_b64(bgr))

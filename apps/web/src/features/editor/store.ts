@@ -1,6 +1,7 @@
 'use client';
 import { create } from 'zustand';
 import { enableMapSet, produce } from 'immer';
+import { reconcileRestore } from '@planiq/shared';
 import type { Placement } from '@planiq/shared';
 
 enableMapSet();
@@ -28,6 +29,7 @@ interface EditorState {
   // mutations (all push history)
   addPlacement: (p: Placement) => void;
   updatePlacement: (id: string, patch: Partial<Placement>) => void;
+  updateSelected: (patch: Partial<Placement>) => void;
   moveSelected: (dx: number, dy: number) => void;
   deleteSelected: () => void;
   duplicateSelected: () => void;
@@ -67,6 +69,15 @@ export const useEditor = create<EditorState>((set, get) => ({
   updatePlacement: (id, patch) => set(produce((s: EditorState) => {
     s.past.push(snapshot(s)); s.future = [];
     Object.assign(s.placements[id], patch); s.dirty.add(id);
+  })),
+
+  updateSelected: (patch) => set(produce((s: EditorState) => {
+    if (!s.selectedIds.length) return;
+    s.past.push(snapshot(s)); s.future = [];
+    for (const id of s.selectedIds) {
+      const p = s.placements[id]; if (!p) continue;
+      Object.assign(p, patch); s.dirty.add(id);
+    }
   })),
 
   moveSelected: (dx, dy) => set(produce((s: EditorState) => {
@@ -125,16 +136,33 @@ export const useEditor = create<EditorState>((set, get) => ({
   setZoom: (z) => set({ zoom: Math.min(5, Math.max(0.2, z)) }),
   setDebugMode: (debugMode) => set({ debugMode }),
 
-  undo: () => set(produce((s: EditorState) => {
-    const prev = s.past.pop(); if (!prev) return;
-    s.future.push(snapshot(s)); s.placements = prev.placements;
-    Object.keys(prev.placements).forEach((id) => s.dirty.add(id));
-  })),
-  redo: () => set(produce((s: EditorState) => {
-    const next = s.future.pop(); if (!next) return;
-    s.past.push(snapshot(s)); s.placements = next.placements;
-    Object.keys(next.placements).forEach((id) => s.dirty.add(id));
-  })),
+  // Undo/redo replace the placement map wholesale, then reconcile the
+  // persistence sets against that change (see reconcileRestore). This keeps
+  // restored-after-delete devices alive and avoids re-upserting the whole floor.
+  undo: () => set((s) => {
+    if (!s.past.length) return {} as Partial<EditorState>;
+    const prev = s.past[s.past.length - 1];
+    const { dirty, deleted } = reconcileRestore(s.placements, prev.placements, s.dirty, s.deleted);
+    return {
+      past: s.past.slice(0, -1),
+      future: [...s.future, snapshot(s)],
+      placements: prev.placements,
+      dirty, deleted,
+      selectedIds: s.selectedIds.filter((id) => prev.placements[id]),
+    };
+  }),
+  redo: () => set((s) => {
+    if (!s.future.length) return {} as Partial<EditorState>;
+    const next = s.future[s.future.length - 1];
+    const { dirty, deleted } = reconcileRestore(s.placements, next.placements, s.dirty, s.deleted);
+    return {
+      past: [...s.past, snapshot(s)],
+      future: s.future.slice(0, -1),
+      placements: next.placements,
+      dirty, deleted,
+      selectedIds: s.selectedIds.filter((id) => next.placements[id]),
+    };
+  }),
 
   takeDirty: () => {
     const s = get();

@@ -60,8 +60,19 @@ def _room_key(r: dict) -> Tuple:
     return tuple(round(c, 3) for pt in r["polygon"] for c in pt)
 
 
-def filter_rooms(raw_rooms: List[dict]) -> Tuple[List[dict], List[dict], List[dict]]:
+def _ov(overrides: Optional[dict], key: str, default):
+    """Read an override value, ignoring None so unset fields keep their defaults."""
+    if not overrides:
+        return default
+    v = overrides.get(key)
+    return v if v is not None else default
+
+
+def filter_rooms(raw_rooms: List[dict], overrides: Optional[dict] = None) -> Tuple[List[dict], List[dict], List[dict]]:
     """Return (accepted, rejected, reject_reasons)."""
+    max_rooms = _ov(overrides, "maxRoomsPerFloor", MAX_ROOMS_PER_FLOOR)
+    min_conf = _ov(overrides, "minRoomConfidence", MIN_ROOM_CONFIDENCE)
+
     candidates = sorted(raw_rooms, key=lambda r: r["area"], reverse=True)
     accepted: List[dict] = []
     rejected: List[dict] = []
@@ -75,7 +86,7 @@ def filter_rooms(raw_rooms: List[dict]) -> Tuple[List[dict], List[dict], List[di
             rejected.append(copy)
             reasons.append({"label": r.get("label"), "type": r.get("type"), "reason": copy["meta"]["rejectionReason"]})
             continue
-        if r.get("confidence", 0) < MIN_ROOM_CONFIDENCE:
+        if r.get("confidence", 0) < min_conf:
             copy["meta"].update({"qcStatus": "rejected", "rejectionReason": "Low-confidence space detection"})
             rejected.append(copy)
             reasons.append({"label": r.get("label"), "type": r.get("type"), "reason": copy["meta"]["rejectionReason"]})
@@ -86,8 +97,8 @@ def filter_rooms(raw_rooms: List[dict]) -> Tuple[List[dict], List[dict], List[di
             rejected.append(copy)
             continue
         seen_keys.add(key)
-        if len(accepted) >= MAX_ROOMS_PER_FLOOR:
-            copy["meta"].update({"qcStatus": "rejected", "rejectionReason": f"Exceeded max {MAX_ROOMS_PER_FLOOR} spaces per floor"})
+        if len(accepted) >= max_rooms:
+            copy["meta"].update({"qcStatus": "rejected", "rejectionReason": f"Exceeded max {max_rooms} spaces per floor"})
             rejected.append(copy)
             reasons.append({"label": r.get("label"), "type": r.get("type"), "reason": copy["meta"]["rejectionReason"]})
             continue
@@ -110,8 +121,13 @@ def _nearest_room(x: float, y: float, rooms: List[dict]) -> Optional[dict]:
 def apply_placement_qc(
     placements: List[dict],
     rooms: List[dict],
+    overrides: Optional[dict] = None,
 ) -> Tuple[List[dict], List[dict], List[dict]]:
     """Accept/reject placements with reasons. Rejected are marked hidden."""
+    max_devices = _ov(overrides, "maxDevicesPerFloor", MAX_DEVICES_PER_FLOOR)
+    min_conf = _ov(overrides, "minDeviceConfidence", MIN_DEVICE_CONFIDENCE)
+    max_per_room = _ov(overrides, "maxDevicesPerRoom", MAX_DEVICES_PER_ROOM)
+
     accepted: List[dict] = []
     rejected: List[dict] = []
     rejections: List[dict] = []
@@ -138,17 +154,17 @@ def apply_placement_qc(
             rejected.append(out)
             rejections.append({"deviceCode": code, "reason": reason, "confidence": conf, "nearSpace": room_label})
 
-        if conf < MIN_DEVICE_CONFIDENCE:
-            reject(f"Confidence {conf:.2f} below threshold {MIN_DEVICE_CONFIDENCE}")
+        if conf < min_conf:
+            reject(f"Confidence {conf:.2f} below threshold {min_conf}")
             continue
-        if len(accepted) >= MAX_DEVICES_PER_FLOOR:
-            reject(f"Floor device limit ({MAX_DEVICES_PER_FLOOR}) reached")
+        if len(accepted) >= max_devices:
+            reject(f"Floor device limit ({max_devices}) reached")
             continue
         if device_counts.get(code, 0) >= PER_DEVICE_LIMITS.get(code, 2):
             reject(f"Max {PER_DEVICE_LIMITS.get(code, 2)} × {code} per floor")
             continue
-        if room_device_counts.get(room_id, 0) >= MAX_DEVICES_PER_ROOM:
-            reject(f"Max {MAX_DEVICES_PER_ROOM} devices per space ({room_label})")
+        if room_device_counts.get(room_id, 0) >= max_per_room:
+            reject(f"Max {max_per_room} devices per space ({room_label})")
             continue
 
         # Device-specific conservative rules

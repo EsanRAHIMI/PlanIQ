@@ -56,8 +56,9 @@ def analyze(req: AnalyzeRequest):
         provider = LlmFallbackProvider(settings.fallback_provider)
     else:
         provider = _cv
+    qc = req.qc.model_dump(exclude_none=True) if req.qc else None
     try:
-        return provider.analyze(bgr, req.floorId)
+        return provider.analyze(bgr, req.floorId, qc)
     except Exception as e:
         log.exception("analyze failed")
         raise HTTPException(status_code=422, detail=f"analysis failed: {e}")

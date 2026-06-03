@@ -4,8 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { Upload } from 'lucide-react';
-import { api } from '@/lib/api';
+import { api, formatApiError } from '@/lib/api';
+import { toast } from '@/lib/toast';
 import { ProcessingTimeline } from '@/components/upload/ProcessingTimeline';
+import { AppHeader } from '@/components/AppHeader';
 import { usePlanUpload } from '@/hooks/usePlanUpload';
 
 export default function ProjectPage() {
@@ -38,40 +40,60 @@ export default function ProjectPage() {
 
   async function exportPdf() {
     setExporting(true);
+    const toastId = toast.loading('Preparing PDF export…');
     try {
       const { exportId } = await api.post<any>(`/projects/${id}/export`, { includeLegend: true, includeSchedule: true });
+      toast.loading('Rendering floors & device schedule…', { id: toastId });
+
+      let attempts = 0;
+      const MAX_ATTEMPTS = 90; // ~3 min at 2s intervals
       const poll = setInterval(async () => {
+        attempts += 1;
         try {
           const exp = await api.get<any>(`/exports/${exportId}`);
           if (exp.status === 'done' && exp.downloadUrl) {
             clearInterval(poll);
-            window.open(exp.downloadUrl, '_blank');
             setExporting(false);
-          }
-          if (exp.status === 'failed') {
+            toast.success(`PDF ready · ${exp.pages ?? ''} page${exp.pages === 1 ? '' : 's'}`.trim(), { id: toastId });
+            window.open(exp.downloadUrl, '_blank', 'noopener');
+          } else if (exp.status === 'failed') {
             clearInterval(poll);
             setExporting(false);
+            toast.error(`Export failed${exp.error ? ` · ${exp.error}` : ''}`, { id: toastId });
+          } else if (attempts >= MAX_ATTEMPTS) {
+            clearInterval(poll);
+            setExporting(false);
+            toast.error('Export is taking longer than expected. Check exports again shortly.', { id: toastId });
           }
-        } catch {
+        } catch (err) {
           clearInterval(poll);
           setExporting(false);
+          toast.error(formatApiError(err, 'Export status'), { id: toastId });
         }
       }, 2000);
-    } catch {
+    } catch (err) {
       setExporting(false);
+      toast.error(formatApiError(err, 'Start export'), { id: toastId });
     }
   }
 
-  if (!project) return <main className="p-10 text-slate-500">Loading…</main>;
+  if (!project) {
+    return (
+      <>
+        <AppHeader breadcrumbs={[{ label: 'Projects', href: '/dashboard' }]} />
+        <main className="p-10 text-slate-500">Loading…</main>
+      </>
+    );
+  }
 
   const floorCount = project.floors?.length ?? 0;
   const showTimeline = session.status !== 'idle';
 
   return (
-    <main className="mx-auto max-w-6xl px-6 py-10">
-      <Link href="/dashboard" className="text-sm text-slate-500 transition hover:text-slate-700">← Projects</Link>
-
-      <header className="mt-2 flex items-center justify-between gap-4">
+    <>
+      <AppHeader breadcrumbs={[{ label: 'Projects', href: '/dashboard' }, { label: project.name }]} />
+      <main className="mx-auto max-w-6xl px-6 py-8">
+      <header className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">{project.name}</h1>
           <p className="text-sm text-slate-500">
@@ -115,7 +137,8 @@ export default function ProjectPage() {
           <EmptyFloorsState session={session} onUpload={() => fileRef.current?.click()} uploading={uploading} />
         )}
       </div>
-    </main>
+      </main>
+    </>
   );
 }
 

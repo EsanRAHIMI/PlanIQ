@@ -86,6 +86,16 @@ class AnalysisResult(BaseModel):
     rawRoomCount: Optional[int] = None
 
 
+class QcOverrides(BaseModel):
+    """Admin-tunable quality-control limits forwarded by the worker. All optional;
+    unset fields fall back to the defaults in rules/quality.py."""
+    maxRoomsPerFloor: Optional[int] = None
+    maxDevicesPerFloor: Optional[int] = None
+    maxDevicesPerRoom: Optional[int] = None
+    minRoomConfidence: Optional[float] = None
+    minDeviceConfidence: Optional[float] = None
+
+
 class AnalyzeRequest(BaseModel):
     imageUrl: Optional[str] = None
     imageB64: Optional[str] = None
@@ -93,6 +103,7 @@ class AnalyzeRequest(BaseModel):
     units: str = "m"
     provider: Literal["cv", "llm_fallback"] = "cv"
     fallbackProvider: str = "disabled"
+    qc: Optional[QcOverrides] = None
 
 
 class SuggestRequest(BaseModel):

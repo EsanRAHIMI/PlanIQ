@@ -43,14 +43,39 @@ export function PropertiesPanel({ devices }: { devices: DeviceDef[] }) {
   const placements = useEditor((s) => s.placements);
   const selectedIds = useEditor((s) => s.selectedIds);
   const layers = useEditor((s) => s.layers);
-  const { updatePlacement, setLayerVisibility } = useEditor();
+  const {
+    updatePlacement, updateSelected, setLayerVisibility,
+    toggleLock, toggleHide, deleteSelected, duplicateSelected,
+  } = useEditor();
   const sel = selectedIds.length === 1 ? placements[selectedIds[0]] : null;
+  const multi = selectedIds.length > 1;
+  const selected = selectedIds.map((id) => placements[id]).filter(Boolean);
+  const allLocked = selected.length > 0 && selected.every((p) => p.locked);
+  const allHidden = selected.length > 0 && selected.every((p) => p.hidden);
 
   return (
     <aside className="flex w-72 flex-col border-l border-slate-200 bg-white">
       <div className="flex-1 overflow-y-auto p-4">
         <h3 className="text-sm font-semibold">Properties</h3>
-        {!sel && <p className="mt-3 text-sm text-slate-400">{selectedIds.length > 1 ? `${selectedIds.length} selected` : 'Select a device'}</p>}
+        {selectedIds.length === 0 && <p className="mt-3 text-sm text-slate-400">Select a device</p>}
+
+        {multi && (
+          <div className="mt-3 space-y-3 text-sm">
+            <p className="text-slate-500">{selectedIds.length} devices selected</p>
+            <Field label="Set device type for all">
+              <select className="input" value="" onChange={(e) => e.target.value && updateSelected({ deviceCode: e.target.value })}>
+                <option value="">Keep current</option>
+                {devices.map((d) => <option key={d.code} value={d.code}>{d.name}</option>)}
+              </select>
+            </Field>
+            <SelectionActions
+              allLocked={allLocked} allHidden={allHidden}
+              onLock={toggleLock} onHide={toggleHide}
+              onDuplicate={duplicateSelected} onDelete={deleteSelected}
+            />
+          </div>
+        )}
+
         {sel && (
           <div className="mt-3 space-y-3 text-sm">
             <Field label="Label">
@@ -69,6 +94,11 @@ export function PropertiesPanel({ devices }: { devices: DeviceDef[] }) {
             <Field label={`Rotation: ${sel.rotation}°`}>
               <input type="range" min={0} max={359} value={sel.rotation} className="w-full" onChange={(e) => updatePlacement(selectedIds[0], { rotation: +e.target.value })} />
             </Field>
+            <SelectionActions
+              allLocked={!!sel.locked} allHidden={!!sel.hidden}
+              onLock={toggleLock} onHide={toggleHide}
+              onDuplicate={duplicateSelected} onDelete={deleteSelected}
+            />
             {sel.source === 'ai' && (
               <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
                 <div className="font-semibold">AI suggestion {sel.confidence ? `(${Math.round(sel.confidence * 100)}%)` : ''}</div>
@@ -97,4 +127,24 @@ export function PropertiesPanel({ devices }: { devices: DeviceDef[] }) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="block"><span className="mb-1 block text-xs text-slate-500">{label}</span>{children}</label>;
+}
+
+function SelectionActions({ allLocked, allHidden, onLock, onHide, onDuplicate, onDelete }: {
+  allLocked: boolean; allHidden: boolean;
+  onLock: () => void; onHide: () => void; onDuplicate: () => void; onDelete: () => void;
+}) {
+  const Btn = ({ onClick, children, danger }: any) => (
+    <button
+      onClick={onClick}
+      className={`rounded-lg border px-2 py-1.5 text-xs ${danger ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+    >{children}</button>
+  );
+  return (
+    <div className="grid grid-cols-2 gap-2 pt-1">
+      <Btn onClick={onLock}>{allLocked ? 'Unlock' : 'Lock'}</Btn>
+      <Btn onClick={onHide}>{allHidden ? 'Show' : 'Hide'}</Btn>
+      <Btn onClick={onDuplicate}>Duplicate</Btn>
+      <Btn onClick={onDelete} danger>Delete</Btn>
+    </div>
+  );
 }

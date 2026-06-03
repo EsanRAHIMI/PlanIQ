@@ -8,5 +8,5 @@ from ..schemas import AnalysisResult
 
 class VisionProvider(ABC):
     @abstractmethod
-    def analyze(self, bgr: np.ndarray, floor_id: str | None) -> AnalysisResult:
+    def analyze(self, bgr: np.ndarray, floor_id: str | None, qc: dict | None = None) -> AnalysisResult:
         ...

@@ -1,5 +1,7 @@
 """PlanIQ AI/CV service — FastAPI. Self-hosted analysis pipeline.
 Endpoints: /health, /ingest (rasterize), /analyze (full pipeline), /suggest (rule engine only)."""
+import os
+import time
 import logging
 import numpy as np
 import requests
@@ -21,8 +23,15 @@ _cv = CvProvider()
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "fallback": settings.fallback_provider,
-            "dwg": settings.enable_dwg, "weights": settings.yolo_weights}
+    weights_path = settings.yolo_weights
+    weights_loaded = os.path.isfile(weights_path)
+    return {
+        "status": "ok",
+        "fallback": settings.fallback_provider,
+        "dwg": settings.enable_dwg,
+        "weights": settings.yolo_weights,
+        "weightsLoaded": weights_loaded,
+    }
 
 
 @app.post("/ingest", response_model=IngestResponse)
@@ -48,17 +57,28 @@ def _load_bgr(req: AnalyzeRequest) -> np.ndarray:
 
 @app.post("/analyze", response_model=AnalysisResult)
 def analyze(req: AnalyzeRequest):
+    started = time.time()
     bgr = _load_bgr(req)
     use_fallback = (req.provider == "llm_fallback"
                     and settings.fallback_provider != "disabled")
+    chain: list[str] = []
     if use_fallback:
+        chain.append("cv_skipped")
+        chain.append(f"llm_fallback:{settings.fallback_provider}")
         log.info("Using LLM fallback provider: %s", settings.fallback_provider)
         provider = LlmFallbackProvider(settings.fallback_provider)
     else:
+        chain.append("cv")
+        if req.fallbackProvider and req.fallbackProvider != "disabled":
+            chain.append(f"fallback_available:{req.fallbackProvider}")
         provider = _cv
     qc = req.qc.model_dump(exclude_none=True) if req.qc else None
     try:
-        return provider.analyze(bgr, req.floorId, qc)
+        result = provider.analyze(bgr, req.floorId, qc)
+        result.durationMs = int((time.time() - started) * 1000)
+        if not result.fallbackChain:
+            result.fallbackChain = chain
+        return result
     except Exception as e:
         log.exception("analyze failed")
         raise HTTPException(status_code=422, detail=f"analysis failed: {e}")

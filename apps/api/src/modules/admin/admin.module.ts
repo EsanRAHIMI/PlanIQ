@@ -23,11 +23,30 @@ const ROLE_RANK: Record<GlobalRole, number> = { viewer: 0, editor: 1, manager: 2
 const JOB_STATES = ['active', 'waiting', 'delayed', 'failed', 'completed'] as const;
 type JobState = (typeof JOB_STATES)[number];
 
+export type AuditTarget =
+  | { type: string; id: string }
+  | { type: 'setting'; key: string };
+
 @Injectable()
 export class AuditService {
   constructor(@InjectModel(MODELS.AuditLog) private logs: Model<any>) {}
-  record(tenantId: string, actorId: string, action: string, target: any, diff?: any, ctx?: { ip?: string; ua?: string }) {
-    return this.logs.create({ tenantId, actorId, action, target, diff, ip: ctx?.ip, userAgent: ctx?.ua });
+
+  private normalizeTarget(target: AuditTarget | undefined) {
+    if (!target) return undefined;
+    if (target.type === 'setting' && 'key' in target) {
+      return { type: target.type, key: String(target.key) };
+    }
+    if ('id' in target && target.id != null) {
+      return { type: target.type, id: String(target.id) };
+    }
+    return { type: target.type };
+  }
+
+  record(tenantId: string, actorId: string, action: string, target?: AuditTarget, diff?: any, ctx?: { ip?: string; ua?: string }) {
+    return this.logs.create({
+      tenantId, actorId, action, target: this.normalizeTarget(target), diff,
+      ip: ctx?.ip, userAgent: ctx?.ua,
+    });
   }
   list(tenantId: string, page = 1, limit = 50) {
     return this.logs.find({ tenantId }).sort({ at: -1 }).skip((page - 1) * limit).limit(limit).lean();
@@ -144,7 +163,7 @@ export class AdminService {
       throw new ForbiddenException('Job belongs to another tenant');
     }
     await job.retry();
-    await this.audit.record(user.tenantId, user.id, 'job.retry', { type: queueName, id });
+    await this.audit.record(user.tenantId, user.id, 'job.retry', { type: queueName, id: String(id) });
     return { ok: true };
   }
 
@@ -187,7 +206,7 @@ export class AdminService {
       target.globalRole = patch.globalRole;
     }
     await target.save();
-    await this.audit.record(actor.tenantId, actor.id, 'user.update', { type: 'user', id }, { before, after: { status: target.status, globalRole: target.globalRole } });
+    await this.audit.record(actor.tenantId, actor.id, 'user.update', { type: 'user', id: String(id) }, { before, after: { status: target.status, globalRole: target.globalRole } });
     const obj = target.toObject(); delete obj.passwordHash; delete obj.mfa;
     return obj;
   }
@@ -228,7 +247,7 @@ export class AdminService {
       { scope: 'tenant', tenantId: user.tenantId, key: AI_SETTINGS_KEY },
       { value: next }, { upsert: true, new: true },
     );
-    await this.audit.record(user.tenantId, user.id, 'ai-settings.update', { type: 'setting', id: AI_SETTINGS_KEY }, { before: current, after: next });
+    await this.audit.record(user.tenantId, user.id, 'ai-settings.update', { type: 'setting', key: AI_SETTINGS_KEY }, { before: current, after: next });
     return next;
   }
 
@@ -239,7 +258,7 @@ export class AdminService {
   async setSetting(user: AuthUser, key: string, value: any) {
     const r = await this.settings.findOneAndUpdate(
       { scope: 'tenant', tenantId: user.tenantId, key }, { value }, { upsert: true, new: true });
-    await this.audit.record(user.tenantId, user.id, 'setting.update', { type: 'setting', id: key }, { after: value });
+    await this.audit.record(user.tenantId, user.id, 'setting.update', { type: 'setting', key }, { after: value });
     return r;
   }
 }

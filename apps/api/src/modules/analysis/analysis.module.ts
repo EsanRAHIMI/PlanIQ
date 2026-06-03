@@ -7,8 +7,11 @@ import { Model } from 'mongoose';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { Observable, interval, map, switchMap, from } from 'rxjs';
-import { MODELS, FloorSchema, DetectedRoomSchema, DetectedZoneSchema } from '../../db/schemas';
+import { AI_SETTINGS_KEY, normalizeAiSettings, type AiCapabilities } from '@planiq/shared';
+import { MODELS, FloorSchema, DetectedRoomSchema, DetectedZoneSchema, SettingSchema } from '../../db/schemas';
 import { ANALYSIS_QUEUE, REDIS } from '../queue/queue.module';
+import { AiModule } from '../ai/ai.module';
+import { AiService } from '../ai/ai.service';
 import { CurrentUser, AuthUser } from '../../common/decorators';
 
 @Injectable()
@@ -17,8 +20,10 @@ export class AnalysisService {
     @InjectModel(MODELS.Floor) private floors: Model<any>,
     @InjectModel(MODELS.DetectedRoom) private rooms: Model<any>,
     @InjectModel(MODELS.DetectedZone) private zones: Model<any>,
+    @InjectModel(MODELS.Setting) private settings: Model<any>,
     @Inject(ANALYSIS_QUEUE) private queue: Queue,
     @Inject(REDIS) private redis: IORedis,
+    private ai: AiService,
   ) {}
 
   async trigger(user: AuthUser, floorId: string, body: { force?: boolean; provider?: 'cv' | 'llm_fallback' }) {
@@ -26,6 +31,7 @@ export class AnalysisService {
     if (!floor) throw new NotFoundException('Floor not found');
     const job = await this.queue.add('analyze', {
       floorId, tenantId: user.tenantId, provider: body.provider ?? 'cv',
+      triggeredBy: user.id,
     }, { attempts: 2 });
     floor.analysis = { ...floor.analysis, status: 'queued', jobId: job.id }; await floor.save();
     return { jobId: job.id };
@@ -47,6 +53,19 @@ export class AnalysisService {
       map((raw) => ({ data: raw ? JSON.parse(raw) : { stage: 'pending', pct: 0 } }) as MessageEvent),
     );
   }
+
+  /** Editor-facing: which engines are available before the user clicks Run. */
+  async capabilities(user: AuthUser): Promise<AiCapabilities> {
+    const doc = await this.settings.findOne({ scope: 'tenant', tenantId: user.tenantId, key: AI_SETTINGS_KEY }).lean();
+    const aiSettings = normalizeAiSettings((doc as any)?.value);
+    const health = await this.ai.getHealthInfo();
+    return {
+      aiServiceOk: health.ok,
+      yoloWeightsAvailable: !!health.weights,
+      yoloWeightsPath: health.weights ?? null,
+      fallbackProvider: aiSettings.fallbackProvider,
+    };
+  }
 }
 
 @ApiTags('analysis') @ApiBearerAuth()
@@ -60,6 +79,9 @@ export class AnalysisController {
   @Get('floors/:floorId/analysis')
   status(@CurrentUser() u: AuthUser, @Param('floorId') f: string) { return this.svc.status(u, f); }
 
+  @Get('ai/capabilities')
+  capabilities(@CurrentUser() u: AuthUser) { return this.svc.capabilities(u); }
+
   @Get('floors/:floorId/rooms')
   rooms(@CurrentUser() u: AuthUser, @Param('floorId') f: string) { return this.svc.rooms_(u, f); }
 
@@ -71,10 +93,13 @@ export class AnalysisController {
 }
 
 @Module({
-  imports: [MongooseModule.forFeature([
+  imports: [
+    AiModule,
+    MongooseModule.forFeature([
     { name: MODELS.Floor, schema: FloorSchema },
     { name: MODELS.DetectedRoom, schema: DetectedRoomSchema },
     { name: MODELS.DetectedZone, schema: DetectedZoneSchema },
+    { name: MODELS.Setting, schema: SettingSchema },
   ])],
   controllers: [AnalysisController],
   providers: [AnalysisService],

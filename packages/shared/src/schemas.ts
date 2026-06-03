@@ -64,6 +64,11 @@ export const analysisResultSchema = z.object({
     rawPlacements: z.number(),
     acceptedPlacements: z.number(),
     rejectedPlacements: z.number(),
+    roomBasedPlacements: z.number().optional(),
+    zoneBasedPlacements: z.number().optional(),
+    perimeterBasedPlacements: z.number().optional(),
+    consistent: z.boolean().optional(),
+    summary: z.string().optional(),
     rejections: z.array(z.object({
       deviceCode: z.string(),
       reason: z.string(),

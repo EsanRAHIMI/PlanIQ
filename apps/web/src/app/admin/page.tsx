@@ -2,16 +2,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api, loadToken, formatApiError } from '@/lib/api';
+import { api, loadToken, formatApiError, fetchMe, isAdminRole } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { AppHeader } from '@/components/AppHeader';
 import {
   AiSettings, AI_SETTINGS_BOUNDS, FALLBACK_PROVIDERS,
+  type AnalysisRunTrace, PROVIDER_LABELS,
 } from '@planiq/shared';
 
 type Me = { id: string; email: string; name: string; globalRole: string; tenantId: string };
 
-const TABS = ['Overview', 'Jobs & Errors', 'AI Settings', 'Users', 'Tenants', 'Audit'] as const;
+const TABS = ['Overview', 'Jobs & Errors', 'AI Runs', 'AI Settings', 'Users', 'Tenants', 'Audit'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function AdminPage() {
@@ -22,9 +23,9 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (!loadToken()) { router.push('/login'); return; }
-    api.get<Me>('/auth/me')
+    fetchMe(true)
       .then((u) => {
-        if (u.globalRole === 'admin' || u.globalRole === 'superadmin') setMe(u);
+        if (u && isAdminRole(u.globalRole)) setMe({ ...u, tenantId: u.tenantId ?? '' });
         else setDenied(true);
       })
       .catch(() => { /* handled globally */ });
@@ -68,6 +69,7 @@ export default function AdminPage() {
       <div className="py-6">
         {tab === 'Overview' && <OverviewTab />}
         {tab === 'Jobs & Errors' && <JobsTab isSuper={isSuper} />}
+        {tab === 'AI Runs' && <AiRunsTab />}
         {tab === 'AI Settings' && <AiSettingsTab />}
         {tab === 'Users' && <UsersTab meId={me.id} />}
         {tab === 'Tenants' && isSuper && <TenantsTab />}
@@ -258,6 +260,75 @@ function ErrorList({ title, items, render }: { title: string; items?: any[]; ren
   );
 }
 
+/* ─────────────────────────── AI Runs ─────────────────────────── */
+function AiRunsTab() {
+  const [runs, setRuns] = useState<AnalysisRunTrace[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.get<AnalysisRunTrace[]>('/admin/analysis-runs?limit=80')
+      .then(setRuns)
+      .catch((e) => toast.error(formatApiError(e, 'AI runs')))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <SectionTitle>AI analysis runs (all floors)</SectionTitle>
+        <button className="btn-ghost text-sm" onClick={load} disabled={loading}>Refresh</button>
+      </div>
+      <div className="card overflow-x-auto">
+        <table className="w-full min-w-[900px] text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+            <tr>
+              <th className="p-2">When</th>
+              <th className="p-2">Floor</th>
+              <th className="p-2">Kind</th>
+              <th className="p-2">Engine</th>
+              <th className="p-2">Model</th>
+              <th className="p-2">Duration</th>
+              <th className="p-2">Spaces</th>
+              <th className="p-2">Devices</th>
+              <th className="p-2">Status</th>
+              <th className="p-2">Errors</th>
+            </tr>
+          </thead>
+          <tbody>
+            {runs.map((r) => (
+              <tr key={r.id} className="border-t border-slate-100 align-top">
+                <td className="p-2 text-xs text-slate-500 whitespace-nowrap">{new Date(r.startedAt).toLocaleString()}</td>
+                <td className="p-2">
+                  <div className="font-medium text-slate-800">{r.floorName ?? short(r.floorId)}</div>
+                  <div className="text-[10px] text-slate-400">{r.projectName ?? short(r.projectId)}</div>
+                </td>
+                <td className="p-2 text-xs capitalize">{r.kind.replace('_', ' ')}</td>
+                <td className="p-2 text-xs">{PROVIDER_LABELS[r.provider] ?? r.provider}</td>
+                <td className="p-2 text-xs text-slate-600">{r.modelName ?? '—'}</td>
+                <td className="p-2 text-xs">{r.durationMs != null ? `${(r.durationMs / 1000).toFixed(1)}s` : '—'}</td>
+                <td className="p-2 text-xs">{r.acceptedSpaces}/{r.detectedSpaces} <span className="text-red-500">({r.rejectedSpaces} rej)</span></td>
+                <td className="p-2 text-xs">{r.acceptedDevices} <span className="text-red-500">({r.rejectedDevices} rej)</span></td>
+                <td className="p-2"><JobState state={r.status} /></td>
+                <td className="p-2 max-w-[200px] text-xs text-red-600 truncate" title={r.errors.join('; ')}>{r.errors[0] ?? ''}</td>
+              </tr>
+            ))}
+            {!loading && !runs.length && (
+              <tr><td colSpan={10} className="p-6 text-center text-slate-400">No analysis runs recorded yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-slate-400">
+        Full analysis runs are created by the upload worker or the editor &quot;Run Full AI Analysis&quot; button;
+        &quot;rules re-suggest&quot; runs come from &quot;Re-run Rule Suggestions&quot; (internal rules only).
+      </p>
+    </div>
+  );
+}
+
 /* ─────────────────────────── AI Settings ─────────────────────────── */
 function AiSettingsTab() {
   const [s, setS] = useState<AiSettings | null>(null);
@@ -289,11 +360,13 @@ function AiSettingsTab() {
 
       <div className="card p-4">
         <label className="block">
-          <span className="mb-1 block text-xs font-semibold text-slate-500">Vision-LLM fallback provider</span>
+          <span className="mb-1 block text-xs font-semibold text-slate-500">Fallback provider for Full AI Analysis</span>
           <select className="input" value={s.fallbackProvider} onChange={(e) => setS({ ...s, fallbackProvider: e.target.value as any })}>
             {FALLBACK_PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
-          <span className="mt-1 block text-xs text-slate-400">Default “disabled” keeps the self-hosted CV pipeline as the only engine. Other providers require server API keys.</span>
+          <span className="mt-1 block text-xs text-slate-400">
+            This is only used for Full AI Analysis when fallback is enabled. Re-run Rule Suggestions always uses internal rules.
+          </span>
         </label>
       </div>
 
@@ -414,7 +487,11 @@ function AuditTab() {
             <tr key={l._id} className="border-t border-slate-100">
               <td className="p-2 text-xs text-slate-500">{l.at ? new Date(l.at).toLocaleString() : ''}</td>
               <td className="p-2"><span className="rounded bg-slate-100 px-2 py-0.5 text-xs">{l.action}</span></td>
-              <td className="p-2 text-xs text-slate-500">{l.target?.type ? `${l.target.type} ${short(l.target.id)}` : '—'}</td>
+              <td className="p-2 text-xs text-slate-500">
+                {l.target?.type
+                  ? `${l.target.type} ${l.target.key ?? (l.target.id ? short(l.target.id) : '')}`.trim()
+                  : '—'}
+              </td>
               <td className="p-2 text-xs text-slate-400">{short(l.actorId)}</td>
             </tr>
           ))}

@@ -6,12 +6,24 @@ import { api, formatApiError } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { useEditor } from '@/features/editor/store';
 import { DeviceLibraryPanel, PropertiesPanel } from '@/components/editor/Panels';
-import { AiSummaryPanel } from '@/components/editor/AiSummaryPanel';
+import { AiAnalysisDetailsPanel } from '@/components/editor/AiAnalysisDetailsPanel';
+import { AiActionsBar } from '@/components/editor/AiActionsBar';
 import { Toolbar } from '@/components/editor/Toolbar';
 import { VersionsModal } from '@/components/editor/VersionsModal';
-import type { AnalysisQcSummary, DeviceDef, Placement } from '@planiq/shared';
+import type { AiCapabilities, AnalysisQcSummary, AnalysisRunTrace, DeviceDef, Placement } from '@planiq/shared';
+import {
+  fullAnalysisFallbackToast,
+  fullAnalysisStartToast,
+  noVisibleChangesMessage,
+  rulesRunStartToast,
+  runCompletionSummary,
+} from '@planiq/shared';
 
 const Canvas = dynamic(() => import('@/components/editor/Canvas').then((m) => m.Canvas), { ssr: false });
+
+function countVisiblePlacements(placements: Record<string, Placement>): number {
+  return Object.values(placements).filter((p) => !p.hidden).length;
+}
 
 export default function EditorPage() {
   const { floorId } = useParams<{ floorId: string }>();
@@ -22,9 +34,38 @@ export default function EditorPage() {
   const [rasterUrl, setRasterUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [qcSummary, setQcSummary] = useState<AnalysisQcSummary | null>(null);
-  const [suggesting, setSuggesting] = useState(false);
+  const [rulesBusy, setRulesBusy] = useState(false);
+  const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [capabilities, setCapabilities] = useState<AiCapabilities | null>(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  const [runs, setRuns] = useState<AnalysisRunTrace[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [liveRun, setLiveRun] = useState<AnalysisRunTrace | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const activeRun = runs.find((r) => r.id === activeRunId) ?? runs[0] ?? null;
+
+  const loadRuns = useCallback(async () => {
+    try {
+      const list = await api.get<AnalysisRunTrace[]>(`/floors/${floorId}/analysis/runs`);
+      setRuns(list);
+      if (list.length && !activeRunId) setActiveRunId(list[0].id ?? null);
+      else if (list.length && activeRunId && !list.some((r) => r.id === activeRunId)) {
+        setActiveRunId(list[0].id ?? null);
+      }
+    } catch {
+      // non-fatal
+    }
+  }, [floorId, activeRunId]);
+
+  const loadCapabilities = useCallback(async () => {
+    try {
+      const caps = await api.get<AiCapabilities>('/ai/capabilities');
+      setCapabilities(caps);
+    } catch {
+      setCapabilities(null);
+    }
+  }, []);
 
   const { load, takeDirty, moveSelected, undo, redo, duplicateSelected, deleteSelected, clearSelection, debugMode, setDebugMode } = useEditor();
   const dirty = useEditor((s) => s.dirty);
@@ -38,6 +79,7 @@ export default function EditorPage() {
     const placements = pl.placements.map((p: any) => ({ ...p, id: p._id ?? p.id }));
     const layers = pl.layers.map((l: any) => ({ ...l, id: l._id ?? l.id }));
     load(floorId, placements as any, layers);
+    return countVisiblePlacements(Object.fromEntries(placements.map((p: any) => [p.id, p])));
   }, [floorId, floor?.analysis?.qcSummary, load]);
 
   useEffect(() => {
@@ -55,6 +97,7 @@ export default function EditorPage() {
           api.get<any[]>(`/projects/${flr.projectId}/floors`).then(setFloors).catch(() => {});
         }
         await loadPlacements(false);
+        await Promise.all([loadRuns(), loadCapabilities()]);
       } catch {
         // Auth failures handled globally in api.ts (toast + redirect).
       }
@@ -65,7 +108,6 @@ export default function EditorPage() {
     void loadPlacements(debugMode);
   }, [debugMode, loadPlacements]);
 
-  /** Flush pending edits immediately. Reused by the debounce and before navigation. */
   const saveNow = useCallback(async () => {
     const { upserts, deletes } = takeDirty();
     if (!upserts.length && !deletes.length) return;
@@ -87,7 +129,6 @@ export default function EditorPage() {
     return () => clearTimeout(saveTimer.current);
   }, [dirty, deleted, saveNow]);
 
-  /** Persist pending edits, then switch floors. */
   const onSelectFloor = useCallback(async (id: string) => {
     if (!id || id === floorId) return;
     clearTimeout(saveTimer.current);
@@ -113,44 +154,161 @@ export default function EditorPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, [undo, redo, duplicateSelected, deleteSelected, clearSelection, moveSelected]);
 
-  const onSuggest = useCallback(async () => {
-    setSuggesting(true);
-    const toastId = toast.loading('Re-running AI suggestions…');
+  const finishRunToast = useCallback((
+    run: AnalysisRunTrace,
+    beforeCount: number,
+    afterCount: number,
+    toastId: string | number,
+  ) => {
+    const summary = runCompletionSummary(run);
+    const noChange = noVisibleChangesMessage(beforeCount, afterCount, run);
+    if (run.status === 'failed') {
+      toast.error(`${summary}${run.errors[0] ? ` · ${run.errors[0]}` : ''}`, { id: toastId });
+      return;
+    }
+    if (noChange) {
+      toast.warning(`${summary} · ${noChange}`, { id: toastId });
+      return;
+    }
+    toast.success(summary, { id: toastId });
+  }, []);
+
+  const onRulesResuggest = useCallback(async () => {
+    setRulesBusy(true);
+    const beforeCount = countVisiblePlacements(useEditor.getState().placements);
+    const startedAt = new Date().toISOString();
+    setLiveRun({
+      id: 'live',
+      projectId: floor?.projectId ?? '',
+      floorId,
+      kind: 'rules_resuggest',
+      status: 'running',
+      provider: 'rules',
+      modelName: 'Internal Rules + QC',
+      fallbackChain: ['rules_engine', 'typescript_mirror'],
+      qcSettings: {},
+      startedAt,
+      detectedSpaces: 0,
+      acceptedSpaces: 0,
+      rejectedSpaces: 0,
+      acceptedDevices: 0,
+      rejectedDevices: 0,
+      errors: [],
+      warnings: [],
+    });
+    const toastId = toast.loading(rulesRunStartToast());
     try {
       const res = await api.post<{
         placements: Placement[];
         summary: AnalysisQcSummary;
-        replaced?: number;
-        roomCount?: number;
+        analysisRun?: AnalysisRunTrace & { id: string };
       }>(`/floors/${floorId}/placements/suggest`);
 
       setQcSummary(res.summary);
-      await loadPlacements(false);
+      const afterCount = await loadPlacements(false);
+      await loadRuns();
+      setLiveRun(null);
 
-      if (!res.placements?.length) {
-        toast.warning('No suggestions passed quality checks. Enable debug mode to inspect rejections.', { id: toastId });
-        return;
-      }
-      toast.success(`Applied ${res.placements.length} AI suggestion(s)`, { id: toastId });
+      const run = res.analysisRun ?? (await api.get<AnalysisRunTrace | null>(`/floors/${floorId}/analysis/runs/latest`));
+      if (run?.id) setActiveRunId(run.id);
+
+      if (run) finishRunToast(run, beforeCount, afterCount, toastId);
+      else toast.success('Internal Rules + QC finished.', { id: toastId });
     } catch (err) {
-      toast.error(formatApiError(err, 'Re-run AI suggestions'), { id: toastId });
+      setLiveRun(null);
+      toast.error(formatApiError(err, 'Re-run Rule Suggestions'), { id: toastId });
     } finally {
-      setSuggesting(false);
+      setRulesBusy(false);
     }
-  }, [floorId, loadPlacements]);
+  }, [floorId, floor?.projectId, loadPlacements, loadRuns, finishRunToast]);
+
+  const pollFullAnalysis = useCallback(async (): Promise<AnalysisRunTrace | null> => {
+    for (let i = 0; i < 180; i++) {
+      const [status, latest] = await Promise.all([
+        api.get<{ status?: string; error?: string }>(`/floors/${floorId}/analysis`),
+        api.get<AnalysisRunTrace | null>(`/floors/${floorId}/analysis/runs/latest`),
+      ]);
+      if (latest?.kind === 'full_analysis') setLiveRun(latest);
+      if (status?.status === 'done' || status?.status === 'failed') {
+        return latest?.kind === 'full_analysis' ? latest : null;
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    return null;
+  }, [floorId]);
+
+  const onFullAnalysis = useCallback(async () => {
+    if (!rasterUrl && !floor?.raster?.key) {
+      toast.error('No plan image on this floor. Upload a plan before running Full AI Analysis.');
+      return;
+    }
+    setAnalysisBusy(true);
+    const beforeCount = countVisiblePlacements(useEditor.getState().placements);
+    const caps = capabilities ?? { aiServiceOk: false, yoloWeightsAvailable: false, fallbackProvider: 'disabled' as const };
+    const toastId = toast.loading(fullAnalysisStartToast(caps));
+    const fbToast = fullAnalysisFallbackToast(caps);
+    if (fbToast) toast.info(fbToast);
+
+    setLiveRun({
+      id: 'live',
+      projectId: floor?.projectId ?? '',
+      floorId,
+      kind: 'full_analysis',
+      status: 'running',
+      provider: 'cv',
+      modelName: caps.yoloWeightsAvailable ? 'CV + YOLOv11 + OCR' : 'CV + OCR',
+      fallbackChain: ['cv'],
+      qcSettings: {},
+      startedAt: new Date().toISOString(),
+      detectedSpaces: 0,
+      acceptedSpaces: 0,
+      rejectedSpaces: 0,
+      acceptedDevices: 0,
+      rejectedDevices: 0,
+      errors: [],
+      warnings: [],
+    });
+
+    try {
+      await api.post(`/floors/${floorId}/analysis`, { provider: 'cv' });
+      const run = await pollFullAnalysis();
+      const afterCount = await loadPlacements(false);
+      await loadRuns();
+      setLiveRun(null);
+
+      if (run?.id) setActiveRunId(run.id);
+      const finalRun = run?.id
+        ? await api.get<AnalysisRunTrace>(`/analysis-runs/${run.id}`)
+        : run;
+
+      if (finalRun) finishRunToast(finalRun, beforeCount, afterCount, toastId);
+      else toast.success('Full AI analysis finished.', { id: toastId });
+    } catch (err) {
+      setLiveRun(null);
+      toast.error(formatApiError(err, 'Run Full AI Analysis'), { id: toastId });
+    } finally {
+      setAnalysisBusy(false);
+    }
+  }, [floorId, floor, rasterUrl, capabilities, pollFullAnalysis, loadPlacements, loadRuns, finishRunToast]);
 
   return (
     <div className="flex h-screen flex-col">
       <Toolbar
         floorName={floor?.name ?? 'Editor'}
         saving={saving}
-        suggesting={suggesting}
-        onSuggest={onSuggest}
         onVersions={() => setVersionsOpen(true)}
         floors={floors}
         currentFloorId={floorId}
         onSelectFloor={onSelectFloor}
         projectHref={floor?.projectId ? `/projects/${floor.projectId}` : undefined}
+      />
+      <AiActionsBar
+        capabilities={capabilities}
+        rulesBusy={rulesBusy}
+        analysisBusy={analysisBusy}
+        hasRaster={!!(rasterUrl || floor?.raster?.key)}
+        onRulesResuggest={onRulesResuggest}
+        onFullAnalysis={onFullAnalysis}
       />
       <VersionsModal
         floorId={floorId}
@@ -161,8 +319,16 @@ export default function EditorPage() {
       <div className="flex flex-1 overflow-hidden">
         <DeviceLibraryPanel devices={devices} />
         <div className="flex flex-1 flex-col">
-          <Canvas rasterUrl={rasterUrl} width={floor?.raster?.width ?? 1200} height={floor?.raster?.height ?? 900} />
-          <AiSummaryPanel summary={qcSummary} debugMode={debugMode} onToggleDebug={() => setDebugMode(!debugMode)} />
+          <Canvas rasterUrl={rasterUrl} width={Math.max(1, floor?.raster?.width ?? 1200)} height={Math.max(1, floor?.raster?.height ?? 900)} />
+          <AiAnalysisDetailsPanel
+            runs={runs}
+            activeRun={activeRun}
+            onSelectRun={setActiveRunId}
+            liveRun={liveRun}
+            qcSummary={qcSummary}
+            debugMode={debugMode}
+            onToggleDebug={() => setDebugMode(!debugMode)}
+          />
         </div>
         <PropertiesPanel devices={devices} />
       </div>

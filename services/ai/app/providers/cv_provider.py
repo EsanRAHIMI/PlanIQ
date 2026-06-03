@@ -42,6 +42,10 @@ class CvProvider(VisionProvider):
             placement_rejections, room_rejections,
         ))
 
+        # Surface the no-interior-space fallback prominently via the existing warnings
+        # channel so the inconsistency is explained without any new UI.
+        if qc_summary.acceptedSpaces == 0 and qc_summary.acceptedPlacements > 0:
+            warnings.insert(0, qc_summary.summary or "Perimeter/zone-based suggestions only — no interior spaces detected")
         if len(rejected_rooms) > 0:
             warnings.append(f"QC filtered {len(rejected_rooms)} low-quality space detections")
         if len(rejected_placements) > 0:
@@ -58,4 +62,8 @@ class CvProvider(VisionProvider):
             provider="cv", warnings=warnings,
             qcSummary=qc_summary,
             rawRoomCount=len(raw_rooms),
+            providerUsed="cv",
+            modelName="opencv+yolo+ocr+rules",
+            fallbackChain=["cv"],
+            errors=[],
         )

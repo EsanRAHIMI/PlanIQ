@@ -69,6 +69,14 @@ class AnalysisQcSummary(BaseModel):
     rawPlacements: int = 0
     acceptedPlacements: int = 0
     rejectedPlacements: int = 0
+    # Device breakdown by what each accepted suggestion is anchored to.
+    roomBasedPlacements: int = 0
+    zoneBasedPlacements: int = 0
+    perimeterBasedPlacements: int = 0
+    # True when every count reconciles (no room-based device without an accepted space).
+    consistent: bool = True
+    # Plain-language explanation of the result, incl. the perimeter/zone-fallback case.
+    summary: Optional[str] = None
     rejections: List[QcRejection] = []
 
 
@@ -84,6 +92,12 @@ class AnalysisResult(BaseModel):
     warnings: List[str] = []
     qcSummary: Optional[AnalysisQcSummary] = None
     rawRoomCount: Optional[int] = None
+    # Traceability (persisted per run in API worker)
+    providerUsed: Optional[Literal["cv", "openai", "claude", "gemini", "hybrid", "rules"]] = None
+    modelName: Optional[str] = None
+    fallbackChain: List[str] = []
+    durationMs: Optional[int] = None
+    errors: List[str] = []
 
 
 class QcOverrides(BaseModel):

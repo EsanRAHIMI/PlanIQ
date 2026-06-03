@@ -8,12 +8,16 @@ _counter = itertools.count()
 MAX_WIFI_PER_FLOOR = 2
 
 
-def _place(code, x, y, rationale, confidence=0.7, rotation=0, props=None):
+def _place(code, x, y, rationale, confidence=0.7, rotation=0, props=None, basis="room"):
+    """basis ∈ {room, zone, perimeter} — records WHAT the suggestion is anchored to so
+    downstream QC and the analysis summary can reconcile devices against accepted
+    interior spaces (a room-based device is only valid if interior rooms were accepted)."""
     return {
         "deviceCode": code, "position": {"x": round(x, 4), "y": round(y, 4)},
         "rotation": rotation, "scale": 1, "locked": False, "hidden": False,
         "source": "ai", "reviewed": False, "rationale": rationale,
         "confidence": confidence, "props": props or {}, "zIndex": next(_counter),
+        "meta": {"basis": basis},
     }
 
 
@@ -45,17 +49,17 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]]) -> List[Di
             (x1 - ins, y1 - ins, 315, "SE external corner — perimeter CCTV"),
             (x0 + ins, y1 - ins, 45, "SW external corner — perimeter CCTV"),
         ]:
-            out.append(_place("CCTV", x, y, why, 0.78, rot))
+            out.append(_place("CCTV", x, y, why, 0.78, rot, basis="perimeter"))
 
     for z in zones:
         coords = z["geometry"]["coords"]
         cx, cy = coords[0] if coords else [0.5, 0.95]
         if z["type"] == "gate":
-            out.append(_place("CCTV", cx, max(0, cy - 0.03), "Gate overview CCTV", 0.8))
-            out.append(_place("GATE_MOTOR", cx, cy, "Main gate motor", 0.86))
-            out.append(_place("INTERCOM_BELL", min(1, cx + 0.03), cy, "Gate intercom call point", 0.82))
+            out.append(_place("CCTV", cx, max(0, cy - 0.03), "Gate overview CCTV", 0.8, basis="zone"))
+            out.append(_place("GATE_MOTOR", cx, cy, "Main gate motor", 0.86, basis="zone"))
+            out.append(_place("INTERCOM_BELL", min(1, cx + 0.03), cy, "Gate intercom call point", 0.82, basis="zone"))
         elif z["type"] == "parking":
-            out.append(_place("CCTV", cx, cy, "Parking area CCTV", 0.76))
+            out.append(_place("CCTV", cx, cy, "Parking area CCTV", 0.76, basis="zone"))
 
     # One corridor CCTV if present
     corridors = by("corridor")

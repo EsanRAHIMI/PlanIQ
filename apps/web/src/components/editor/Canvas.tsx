@@ -7,6 +7,17 @@ import { DEVICE_BY_CODE, DEFAULT_LAYERS } from '@planiq/shared';
 
 interface Props { rasterUrl: string | null; width: number; height: number; }
 
+const MIN_DIM = 1;
+
+/** Avoid Konva drawImage crashes when layout or raster dims are transiently zero. */
+function safeDim(v: number, fallback = MIN_DIM): number {
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+function imageReady(img: HTMLImageElement | null): img is HTMLImageElement {
+  return !!img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0;
+}
+
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 // Persisted layers often lack the `categories` field (seeding drops it), so we
@@ -45,26 +56,37 @@ export function Canvas({ rasterUrl, width, height }: Props) {
   }, [rasterUrl]);
 
   useEffect(() => {
-    const ro = new ResizeObserver(([e]) => setSize({ w: e.contentRect.width, h: e.contentRect.height }));
+    const ro = new ResizeObserver(([e]) => {
+      const w = e.contentRect.width;
+      const h = e.contentRect.height;
+      // ResizeObserver can briefly report 0 during flex reflow (e.g. toasts / AI bar).
+      if (w < MIN_DIM || h < MIN_DIM) return;
+      setSize({ w, h });
+    });
     if (containerRef.current) ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, []);
 
+  const planWidth = safeDim(width, 1200);
+  const planHeight = safeDim(height, 900);
+  const stageW = safeDim(size.w, 800);
+  const stageH = safeDim(size.h, 600);
+
   // Geometry (kept in a ref so window listeners read fresh values without re-registering).
-  const baseScale = Math.min(size.w / width, size.h / height) || 1;
+  const baseScale = Math.min(stageW / planWidth, stageH / planHeight) || 1;
   const scale = baseScale * zoom;
-  const planW = width * scale;
-  const planH = height * scale;
-  const groupX = (size.w - planW) / 2 + pan.x;
-  const groupY = (size.h - planH) / 2 + pan.y;
+  const planW = planWidth * scale;
+  const planH = planHeight * scale;
+  const groupX = (stageW - planW) / 2 + pan.x;
+  const groupY = (stageH - planH) / 2 + pan.y;
   const geom = useRef({ groupX, groupY, planW, planH });
   geom.current = { groupX, groupY, planW, planH };
 
   // Square-cell grid: derive per-axis steps from the plan aspect so cells are
   // square in plan-pixel space (fixes snap distortion on non-square plans).
-  const longer = Math.max(width, height);
-  const stepX = longer / (40 * width);
-  const stepY = longer / (40 * height);
+  const longer = Math.max(planWidth, planHeight);
+  const stepX = longer / (40 * planWidth);
+  const stepY = longer / (40 * planHeight);
   const vLines = Math.round(1 / stepX);
   const hLines = Math.round(1 / stepY);
   const snapX = (v: number) => (snap ? clamp01(Math.round(v / stepX) * stepX) : clamp01(v));
@@ -201,19 +223,21 @@ export function Canvas({ rasterUrl, width, height }: Props) {
       </div>
 
       <Stage
-        width={size.w}
-        height={size.h}
+        width={stageW}
+        height={stageH}
         onWheel={onWheel}
         onMouseDown={(e) => { if (e.target === e.target.getStage()) onEmptyMouseDown(e); }}
       >
         <Layer>
           <Group x={groupX} y={groupY}>
             <Rect
-              name="plan-bg" x={0} y={0} width={planW} height={planH}
-              fill={img ? undefined : '#fff'} stroke="#cbd5e1"
+              name="plan-bg" x={0} y={0} width={Math.max(planW, MIN_DIM)} height={Math.max(planH, MIN_DIM)}
+              fill={imageReady(img) ? undefined : '#fff'} stroke="#cbd5e1"
               onMouseDown={onEmptyMouseDown}
             />
-            {img && <KImage image={img} x={0} y={0} width={planW} height={planH} listening={false} />}
+            {imageReady(img) && planW >= MIN_DIM && planH >= MIN_DIM && (
+              <KImage image={img} x={0} y={0} width={planW} height={planH} listening={false} />
+            )}
             {showGrid && Array.from({ length: vLines + 1 }).map((_, i) => (
               <Line key={`v${i}`} points={[stepX * i * planW, 0, stepX * i * planW, planH]}
                 stroke="#e2e8f0" strokeWidth={0.5} listening={false} />

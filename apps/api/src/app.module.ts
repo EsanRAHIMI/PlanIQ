@@ -17,6 +17,7 @@ import { ProjectsModule } from './modules/projects/projects.module';
 import { FloorsModule } from './modules/floors/floors.module';
 import { AssetsModule } from './modules/assets/assets.module';
 import { AnalysisModule } from './modules/analysis/analysis.module';
+import { AnalysisRunsModule } from './modules/analysis-runs/analysis-runs.module';
 import { PlacementsModule } from './modules/placements/placements.module';
 import { DevicesModule } from './modules/devices/devices.module';
 import { VersionsModule } from './modules/versions/versions.module';
@@ -60,7 +61,8 @@ function prettyTransportIfAvailable(nodeEnv: string) {
     }),
     StorageModule, AiModule, QueueModule,
     AuthModule, ProjectsModule, FloorsModule, AssetsModule, AnalysisModule,
-    PlacementsModule, DevicesModule, VersionsModule, ExportsModule, AdminModule, HealthModule,
+    PlacementsModule, DevicesModule, VersionsModule, ExportsModule, AnalysisRunsModule,
+    AdminModule, HealthModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

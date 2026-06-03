@@ -10,7 +10,7 @@ import { Worker, Queue } from 'bullmq';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
-import { AI_SETTINGS_KEY, normalizeAiSettings } from '@planiq/shared';
+import { AI_SETTINGS_KEY, normalizeAiSettings, countsFromQcSummary } from '@planiq/shared';
 import config from './config/configuration';
 import {
   extractHost,
@@ -22,6 +22,9 @@ import {
 import { createS3Client, formatS3EndpointForLog } from './config/s3-client';
 import { MONGOOSE_MODELS } from './db/schemas';
 import { renderProjectPdf } from './modules/exports/pdf-renderer';
+import { assertPlaniqSharedBuilt } from './config/ensure-shared';
+
+assertPlaniqSharedBuilt();
 
 const loadedEnvFiles = loadEnvFromSharedSources();
 validateWorkerRuntimeEnv(process.env as Record<string, unknown>);
@@ -103,38 +106,100 @@ async function handleProcess(data: any) {
   return { floors: createdFloors };
 }
 
+function qcPayload(settings: ReturnType<typeof normalizeAiSettings>) {
+  return {
+    maxRoomsPerFloor: settings.maxRoomsPerFloor,
+    maxDevicesPerFloor: settings.maxDevicesPerFloor,
+    maxDevicesPerRoom: settings.maxDevicesPerRoom,
+    minRoomConfidence: settings.minRoomConfidence,
+    minDeviceConfidence: settings.minDeviceConfidence,
+    fallbackProvider: settings.fallbackProvider,
+  };
+}
+
+function resolveProviderUsed(result: any, requested: string, fallbackProvider: string): string {
+  if (result.providerUsed) return result.providerUsed;
+  if (result.provider === 'llm_fallback' || requested === 'llm_fallback') {
+    if (['openai', 'claude', 'gemini'].includes(fallbackProvider)) return fallbackProvider;
+    return 'openai';
+  }
+  return 'cv';
+}
+
 // ── 'analyze': floor raster → AI /analyze → persist rooms/zones/placements ──
 async function handleAnalyze(data: any) {
   const floor = await M.Floor.findById(data.floorId);
   if (!floor?.raster?.key) return;
+  const startedAt = new Date();
+
+  const settingDoc = await M.Setting.findOne({ scope: 'tenant', tenantId: floor.tenantId, key: AI_SETTINGS_KEY }).lean();
+  const aiSettings = normalizeAiSettings((settingDoc as any)?.value);
+  const requested = data.provider ?? (aiSettings.fallbackProvider !== 'disabled' ? 'llm_fallback' : 'cv');
+
+  const run = await M.AnalysisRun.create({
+    tenantId: floor.tenantId,
+    projectId: floor.projectId,
+    floorId: floor._id,
+    kind: 'full_analysis',
+    status: 'running',
+    jobId: floor.analysis?.jobId ? String(floor.analysis.jobId) : undefined,
+    triggeredBy: data.triggeredBy ?? undefined,
+    provider: requested === 'llm_fallback' ? (['openai', 'claude', 'gemini'].includes(aiSettings.fallbackProvider) ? aiSettings.fallbackProvider : 'openai') : 'cv',
+    modelName: null,
+    fallbackChain: requested === 'llm_fallback' ? ['cv_skipped', `llm_fallback:${aiSettings.fallbackProvider}`] : ['cv'],
+    qcSettings: qcPayload(aiSettings),
+    startedAt,
+    warnings: [],
+    errors: [],
+  });
+
   await progress(data.floorId, 'preprocess', 10, 'Preparing image');
-  floor.analysis = { ...floor.analysis, status: 'processing' }; await floor.save();
+  floor.analysis = { ...floor.analysis, status: 'processing', latestRunId: run._id }; await floor.save();
 
   const imageUrl = await presignGet(floor.raster.key);
   await progress(data.floorId, 'detect', 40, 'Detecting rooms & symbols');
 
-  // Tenant AI/QC settings (admin-tunable) forwarded so changes actually affect output.
-  const settingDoc = await M.Setting.findOne({ scope: 'tenant', tenantId: floor.tenantId, key: AI_SETTINGS_KEY }).lean();
-  const aiSettings = normalizeAiSettings((settingDoc as any)?.value);
-  const provider = data.provider
-    ?? (aiSettings.fallbackProvider !== 'disabled' ? 'llm_fallback' : 'cv');
+  const t0 = Date.now();
+  let result: any;
+  try {
+    const res = await fetch(`${cfg.ai.url}/analyze`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        imageUrl, floorId: data.floorId, units: 'm',
+        provider: requested, fallbackProvider: aiSettings.fallbackProvider,
+        qc: {
+          maxRoomsPerFloor: aiSettings.maxRoomsPerFloor,
+          maxDevicesPerFloor: aiSettings.maxDevicesPerFloor,
+          maxDevicesPerRoom: aiSettings.maxDevicesPerRoom,
+          minRoomConfidence: aiSettings.minRoomConfidence,
+          minDeviceConfidence: aiSettings.minDeviceConfidence,
+        },
+      }),
+    });
+    if (!res.ok) {
+      const errText = `AI service HTTP ${res.status}`;
+      await M.AnalysisRun.updateOne({ _id: run._id }, {
+        status: 'failed', finishedAt: new Date(), durationMs: Date.now() - t0,
+        errors: [errText],
+      });
+      floor.analysis = { ...floor.analysis, status: 'failed', error: errText, latestRunId: run._id };
+      await floor.save();
+      throw new Error(errText);
+    }
+    result = await res.json();
+  } catch (e: any) {
+    const msg = e?.message ?? 'Analysis failed';
+    await M.AnalysisRun.updateOne({ _id: run._id }, {
+      status: 'failed', finishedAt: new Date(), durationMs: Date.now() - t0, errors: [msg],
+    });
+    floor.analysis = { ...floor.analysis, status: 'failed', error: msg, latestRunId: run._id };
+    await floor.save();
+    throw e;
+  }
 
-  const res = await fetch(`${cfg.ai.url}/analyze`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      imageUrl, floorId: data.floorId, units: 'm',
-      provider, fallbackProvider: aiSettings.fallbackProvider,
-      qc: {
-        maxRoomsPerFloor: aiSettings.maxRoomsPerFloor,
-        maxDevicesPerFloor: aiSettings.maxDevicesPerFloor,
-        maxDevicesPerRoom: aiSettings.maxDevicesPerRoom,
-        minRoomConfidence: aiSettings.minRoomConfidence,
-        minDeviceConfidence: aiSettings.minDeviceConfidence,
-      },
-    }),
-  });
-  if (!res.ok) { floor.analysis = { ...floor.analysis, status: 'failed', error: `AI ${res.status}` }; await floor.save(); throw new Error(`analyze ${res.status}`); }
-  const result = await res.json();
+  const durationMs = result.durationMs ?? (Date.now() - t0);
+  const providerUsed = resolveProviderUsed(result, requested, aiSettings.fallbackProvider);
+  const counts = countsFromQcSummary(result.qcSummary);
 
   await progress(data.floorId, 'persist', 75, 'Saving suggestions');
   await M.DetectedRoom.deleteMany({ floorId: floor._id });
@@ -154,6 +219,19 @@ async function handleAnalyze(data: any) {
     !p.hidden && p.meta?.qcStatus !== 'rejected',
   ).length;
 
+  await M.AnalysisRun.updateOne({ _id: run._id }, {
+    status: 'done',
+    finishedAt: new Date(),
+    durationMs,
+    provider: providerUsed,
+    modelName: result.modelName ?? null,
+    fallbackChain: result.fallbackChain?.length ? result.fallbackChain : run.fallbackChain,
+    qcSummary: result.qcSummary ?? null,
+    ...counts,
+    warnings: result.warnings ?? [],
+    errors: result.errors ?? [],
+  });
+
   floor.counts = { rooms: result.rooms?.length ?? 0, placements: acceptedCount };
   floor.analysis = {
     status: 'done',
@@ -162,10 +240,11 @@ async function handleAnalyze(data: any) {
     finishedAt: new Date(),
     qcSummary: result.qcSummary ?? null,
     rawRoomCount: result.rawRoomCount ?? result.qcSummary?.detectedSpaces ?? null,
+    latestRunId: run._id,
   };
   await floor.save();
   await progress(data.floorId, 'done', 100, 'Analysis complete');
-  return { rooms: floor.counts.rooms, placements: floor.counts.placements };
+  return { rooms: floor.counts.rooms, placements: floor.counts.placements, runId: String(run._id) };
 }
 
 // ── 'export': render project PDF via Playwright → S3 ──

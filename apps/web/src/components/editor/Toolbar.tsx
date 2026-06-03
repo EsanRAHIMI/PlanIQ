@@ -1,19 +1,23 @@
 'use client';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useEditor } from '@/features/editor/store';
 import { LogoutButton } from '@/components/LogoutButton';
+import { fetchMe, isAdminRole } from '@/lib/api';
 
 interface FloorOption { _id: string; name: string }
 
 export function Toolbar({
-  floorName, saving, suggesting, onSuggest, onVersions, floors, currentFloorId, onSelectFloor, projectHref,
+  floorName, saving, onVersions, floors, currentFloorId, onSelectFloor, projectHref,
 }: {
-  floorName: string; saving: boolean; suggesting?: boolean;
-  onSuggest: () => void; onVersions: () => void;
+  floorName: string; saving: boolean;
+  onVersions: () => void;
   floors?: FloorOption[]; currentFloorId?: string; onSelectFloor?: (id: string) => void;
   projectHref?: string;
 }) {
   const { undo, redo, duplicateSelected, deleteSelected, rotateSelected, toggleLock, toggleHide, groupSelected, selectedIds } = useEditor();
+  const [showAdmin, setShowAdmin] = useState(false);
+  useEffect(() => { fetchMe().then((u) => setShowAdmin(isAdminRole(u?.globalRole))); }, []);
   const has = selectedIds.length > 0;
   const Btn = ({ onClick, children, disabled }: any) => (
     <button className="btn-ghost px-2.5 py-1.5 text-xs" onClick={onClick} disabled={disabled}>{children}</button>
@@ -47,15 +51,13 @@ export function Toolbar({
       <Btn onClick={groupSelected} disabled={selectedIds.length < 2}>Group</Btn>
       <Btn onClick={deleteSelected} disabled={!has}>Delete</Btn>
       <div className="ml-auto flex gap-2">
+        {showAdmin && (
+          <Link href="/admin" className="btn-ghost px-2.5 py-1.5 text-xs" title="Admin Control Center">
+            Admin
+          </Link>
+        )}
         <LogoutButton className="btn-ghost px-2.5 py-1.5 text-xs" />
         <Btn onClick={onVersions}>Versions</Btn>
-        <button
-          className="btn-primary px-3 py-1.5 text-xs"
-          onClick={onSuggest}
-          disabled={suggesting}
-        >
-          {suggesting ? 'Suggesting…' : 'Re-run AI suggestions'}
-        </button>
       </div>
     </div>
   );

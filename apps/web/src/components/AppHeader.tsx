@@ -3,23 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ChevronRight } from 'lucide-react';
-import { api, loadToken, logout } from '@/lib/api';
+import { fetchMe, isAdminRole, logout, type MeProfile } from '@/lib/api';
 
 export interface Crumb { label: string; href?: string }
-
-interface Me { id: string; name: string; email: string; globalRole: string }
-
-// Module-level cache so navigating between pages doesn't refetch the profile.
-// Cleared naturally on logout (logout() does a full page navigation).
-let mePromise: Promise<Me | null> | null = null;
-function getMe(): Promise<Me | null> {
-  if (!mePromise) {
-    mePromise = loadToken()
-      ? api.get<Me>('/auth/me').catch(() => null)
-      : Promise.resolve(null);
-  }
-  return mePromise;
-}
 
 function initials(name?: string, email?: string) {
   const src = (name || email || '?').trim();
@@ -31,11 +17,11 @@ function initials(name?: string, email?: string) {
 /** Global app header: brand, location-aware nav, breadcrumbs, and a user menu. */
 export function AppHeader({ breadcrumbs }: { breadcrumbs?: Crumb[] }) {
   const pathname = usePathname() ?? '';
-  const [me, setMe] = useState<Me | null>(null);
+  const [me, setMe] = useState<MeProfile | null>(null);
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { getMe().then(setMe); }, []);
+  useEffect(() => { fetchMe().then(setMe); }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -46,7 +32,7 @@ export function AppHeader({ breadcrumbs }: { breadcrumbs?: Crumb[] }) {
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
   }, [open]);
 
-  const isAdmin = me?.globalRole === 'admin' || me?.globalRole === 'superadmin';
+  const isAdmin = isAdminRole(me?.globalRole);
   const inProjects = pathname === '/dashboard' || pathname.startsWith('/projects') || pathname.startsWith('/editor');
   const inAdmin = pathname.startsWith('/admin');
 

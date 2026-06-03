@@ -57,6 +57,14 @@ export interface AnalysisQcSummary {
   rawPlacements: number;
   acceptedPlacements: number;
   rejectedPlacements: number;
+  /** Accepted-device breakdown by what each suggestion is anchored to. */
+  roomBasedPlacements?: number;
+  zoneBasedPlacements?: number;
+  perimeterBasedPlacements?: number;
+  /** True when all counts reconcile (no room-based device without an accepted space). */
+  consistent?: boolean;
+  /** Plain-language explanation of the result, incl. the perimeter/zone fallback case. */
+  summary?: string;
   rejections: QcRejection[];
 }
 
@@ -72,6 +80,12 @@ export interface AnalysisResult {
   warnings: string[];
   qcSummary?: AnalysisQcSummary;
   rawRoomCount?: number;
+  /** Traceability fields returned by the AI service. */
+  providerUsed?: 'cv' | 'openai' | 'claude' | 'gemini' | 'hybrid' | 'rules';
+  modelName?: string | null;
+  fallbackChain?: string[];
+  durationMs?: number;
+  errors?: string[];
 }
 
 export interface RuleConfig {

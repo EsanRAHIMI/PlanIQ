@@ -118,15 +118,35 @@ def _nearest_room(x: float, y: float, rooms: List[dict]) -> Optional[dict]:
     return best
 
 
+def placement_basis(p: dict) -> str:
+    """room | zone | perimeter — what a suggestion is anchored to. Prefers the explicit
+    tag set by the rule engine; infers from the rationale only as a fallback for older data."""
+    b = (p.get("meta") or {}).get("basis")
+    if b in ("room", "zone", "perimeter"):
+        return b
+    r = (p.get("rationale") or "").lower()
+    if "corner" in r or "perimeter" in r:
+        return "perimeter"
+    if "gate" in r or "parking" in r:
+        return "zone"
+    return "room"
+
+
 def apply_placement_qc(
     placements: List[dict],
     rooms: List[dict],
     overrides: Optional[dict] = None,
 ) -> Tuple[List[dict], List[dict], List[dict]]:
-    """Accept/reject placements with reasons. Rejected are marked hidden."""
+    """Accept/reject placements with reasons. Rejected are marked hidden.
+
+    Internal-consistency guarantee: a *room-based* device can never be accepted when no
+    interior spaces were accepted. Zone/perimeter devices (gate, parking, building
+    perimeter) may still appear with zero rooms, but are clearly tagged as a
+    perimeter/zone fallback so counts and the summary stay trustworthy."""
     max_devices = _ov(overrides, "maxDevicesPerFloor", MAX_DEVICES_PER_FLOOR)
     min_conf = _ov(overrides, "minDeviceConfidence", MIN_DEVICE_CONFIDENCE)
     max_per_room = _ov(overrides, "maxDevicesPerRoom", MAX_DEVICES_PER_ROOM)
+    has_rooms = len(rooms) > 0
 
     accepted: List[dict] = []
     rejected: List[dict] = []
@@ -145,7 +165,9 @@ def apply_placement_qc(
         room_type = near["type"] if near else "unknown"
         room_label = near.get("label", room_type) if near else "unknown"
         room_id = room_label
+        basis = placement_basis(p)
         meta = dict(p.get("meta") or {})
+        meta["basis"] = basis
         meta["spaceCategory"] = space_category(room_type) if near else "unknown"
 
         def reject(reason: str):
@@ -153,6 +175,11 @@ def apply_placement_qc(
             out = {**p, "meta": meta, "hidden": True}
             rejected.append(out)
             rejections.append({"deviceCode": code, "reason": reason, "confidence": conf, "nearSpace": room_label})
+
+        # Consistency gate: room-based devices require at least one accepted interior space.
+        if basis == "room" and not has_rooms:
+            reject("No interior spaces accepted — room-based device suppressed for consistency")
+            continue
 
         if conf < min_conf:
             reject(f"Confidence {conf:.2f} below threshold {min_conf}")
@@ -191,7 +218,15 @@ def apply_placement_qc(
             continue
 
         meta.update({"qcStatus": "accepted", "rejectionReason": None, "nearSpace": room_label})
-        accepted.append({**p, "meta": meta, "hidden": False})
+        accepted_p = {**p, "meta": meta, "hidden": False}
+        # When there are no interior rooms, surviving zone/perimeter devices are clearly
+        # labelled as a fallback so the user understands they are not tied to a room.
+        if basis in ("zone", "perimeter") and not has_rooms:
+            meta["placementContext"] = "perimeter_fallback"
+            base_rationale = accepted_p.get("rationale") or code
+            accepted_p["rationale"] = f"[Perimeter/zone fallback — no interior spaces detected] {base_rationale}"
+            accepted_p["label"] = accepted_p.get("label") or f"{code} (perimeter/zone fallback)"
+        accepted.append(accepted_p)
         device_counts[code] = device_counts.get(code, 0) + 1
         room_device_counts[room_id] = room_device_counts.get(room_id, 0) + 1
 
@@ -208,13 +243,55 @@ def build_summary(
     placement_rejections: List[dict],
     room_rejections: List[dict],
 ) -> dict:
+    accepted_spaces = len(accepted_rooms)
+    accepted_devices = len(accepted_placements)
+
+    # Device breakdown by what each accepted suggestion is anchored to.
+    room_based = sum(1 for p in accepted_placements if placement_basis(p) == "room")
+    zone_based = sum(1 for p in accepted_placements if placement_basis(p) == "zone")
+    perimeter_based = sum(1 for p in accepted_placements if placement_basis(p) == "perimeter")
+    fallback_devices = zone_based + perimeter_based
+
+    # Counts must reconcile by construction; surface a flag so the UI/QA can trust them.
+    consistent = (
+        room_based + zone_based + perimeter_based == accepted_devices
+        and len(raw_placements) == accepted_devices + len(rejected_placements)
+        and not (accepted_spaces == 0 and room_based > 0)
+    )
+
+    if accepted_spaces == 0 and accepted_devices == 0:
+        summary = (
+            "No interior spaces were confidently detected and no devices were placed. "
+            "Try a higher-resolution plan or verify the drawing quality, then re-run analysis."
+        )
+    elif accepted_spaces == 0 and accepted_devices > 0:
+        summary = (
+            f"No interior spaces were confidently detected. The {accepted_devices} suggestion(s) "
+            f"shown are perimeter/zone-based only (e.g. gate, parking, building perimeter) and are "
+            f"NOT tied to interior rooms — treat them as fallback placements and review the plan."
+        )
+    else:
+        fallback_note = (
+            f", {fallback_devices} perimeter/zone-based" if fallback_devices else ""
+        )
+        summary = (
+            f"Detected {len(raw_rooms)} space(s); {accepted_spaces} accepted. "
+            f"Placed {accepted_devices} device(s): {room_based} room-based{fallback_note}. "
+            f"{len(rejected_placements)} suggestion(s) withheld by QC."
+        )
+
     return {
         "detectedSpaces": len(raw_rooms),
-        "acceptedSpaces": len(accepted_rooms),
+        "acceptedSpaces": accepted_spaces,
         "rejectedSpaces": len(rejected_rooms),
         "rawPlacements": len(raw_placements),
-        "acceptedPlacements": len(accepted_placements),
+        "acceptedPlacements": accepted_devices,
         "rejectedPlacements": len(rejected_placements),
+        "roomBasedPlacements": room_based,
+        "zoneBasedPlacements": zone_based,
+        "perimeterBasedPlacements": perimeter_based,
+        "consistent": consistent,
+        "summary": summary,
         "rejections": placement_rejections + [
             {"deviceCode": "-", "reason": r["reason"], "nearSpace": r.get("label")} for r in room_rejections
         ],

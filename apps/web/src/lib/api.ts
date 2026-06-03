@@ -9,6 +9,7 @@ let sessionRedirecting = false;
 
 export const setToken = (t: string | null) => {
   accessToken = t;
+  clearMeCache();
   if (t) sessionRedirecting = false;
   if (typeof window !== 'undefined') {
     t ? localStorage.setItem('pq_t', t) : localStorage.removeItem('pq_t');
@@ -21,6 +22,48 @@ export const loadToken = () => {
 
 export function clearSession() {
   setToken(null);
+  clearMeCache();
+}
+
+/** Normalized profile from GET /auth/me (API returns { user, tenant }). */
+export interface MeProfile {
+  id: string;
+  name: string;
+  email: string;
+  globalRole: string;
+  tenantId?: string;
+}
+
+let meCache: Promise<MeProfile | null> | null = null;
+
+export function clearMeCache() {
+  meCache = null;
+}
+
+export function isAdminRole(role?: string | null): boolean {
+  return role === 'admin' || role === 'superadmin';
+}
+
+export function fetchMe(force = false): Promise<MeProfile | null> {
+  if (force) meCache = null;
+  if (!meCache) {
+    meCache = loadToken()
+      ? request<{ user: MeProfile & { _id?: string }; tenant?: { _id?: string } }>('/auth/me')
+          .then((res) => {
+            const raw = res.user ?? (res as unknown as MeProfile);
+            if (!raw?.globalRole) return null;
+            return {
+              id: String(raw.id ?? (raw as { _id?: string })._id ?? ''),
+              name: raw.name,
+              email: raw.email,
+              globalRole: raw.globalRole,
+              tenantId: res.tenant?._id ? String(res.tenant._id) : undefined,
+            };
+          })
+          .catch(() => null)
+      : Promise.resolve(null);
+  }
+  return meCache;
 }
 
 async function handleSessionExpired() {

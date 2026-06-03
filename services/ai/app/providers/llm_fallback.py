@@ -10,7 +10,15 @@ from PIL import Image
 from .base import VisionProvider
 from ..schemas import AnalysisResult
 from ..rules.engine import suggest
+from ..rules.quality import filter_rooms, apply_placement_qc, build_summary
+from ..schemas import AnalysisQcSummary
 from ..config import settings
+
+MODEL_BY_PROVIDER = {
+    "openai": "gpt-4o",
+    "claude": "claude-3-5-sonnet-20240620",
+    "gemini": "gemini-1.5-pro",
+}
 
 
 PROMPT = (
@@ -31,16 +39,39 @@ class LlmFallbackProvider(VisionProvider):
         return base64.b64encode(buf.getvalue()).decode()
 
     def analyze(self, bgr: np.ndarray, floor_id=None, qc=None) -> AnalysisResult:
-        rooms, zones, warnings = [], [], ["LLM fallback used"]
+        rooms, zones, warnings, errors = [], [], ["LLM vision fallback engaged"], []
+        chain = ["cv_skipped", f"llm_fallback:{self.which}"]
         try:
             rooms, zones = self._call(self._png_b64(bgr))
         except Exception as e:  # never hard-fail; degrade to empty + warning
-            warnings.append(f"LLM fallback error: {e}")
-        placements = suggest(rooms, zones)
+            msg = f"LLM fallback error: {e}"
+            warnings.append(msg)
+            errors.append(msg)
+
+        raw_rooms = rooms
+        accepted_rooms, rejected_rooms, room_rejections = filter_rooms(raw_rooms, qc)
+        raw_placements = suggest(accepted_rooms, zones)
+        accepted_placements, rejected_placements, placement_rejections = apply_placement_qc(
+            raw_placements, accepted_rooms, qc,
+        )
+        placements = accepted_placements + rejected_placements
+        qc_summary = AnalysisQcSummary(**build_summary(
+            raw_rooms, accepted_rooms, rejected_rooms,
+            raw_placements, accepted_placements, rejected_placements,
+            placement_rejections, room_rejections,
+        ))
+
+        used = self.which if self.which in ("openai", "claude", "gemini") else "openai"
         return AnalysisResult(
             floorId=floor_id, image={"width": bgr.shape[1], "height": bgr.shape[0]},
-            rooms=rooms, zones=zones, detections=[], placements=placements,
-            confidence=0.6 if rooms else 0.2, provider="llm_fallback", warnings=warnings,
+            rooms=accepted_rooms, zones=zones, detections=[], placements=placements,
+            confidence=0.6 if accepted_rooms else 0.2, provider="llm_fallback", warnings=warnings,
+            qcSummary=qc_summary,
+            rawRoomCount=len(raw_rooms),
+            providerUsed=used,
+            modelName=MODEL_BY_PROVIDER.get(self.which, self.which),
+            fallbackChain=chain,
+            errors=errors,
         )
 
     def _call(self, b64: str):

@@ -47,4 +47,17 @@ export class AiService {
   async health(): Promise<boolean> {
     try { const r = await fetch(`${this.base}/health`); return r.ok; } catch { return false; }
   }
+
+  /** Health payload from FastAPI — used for editor engine badges (YOLO weights, etc.). */
+  async getHealthInfo(): Promise<{ ok: boolean; weights?: string | null; fallback?: string }> {
+    try {
+      const r = await fetch(`${this.base}/health`);
+      if (!r.ok) return { ok: false };
+      const j = await r.json() as { weights?: string; weightsLoaded?: boolean; fallback?: string };
+      const yoloAvailable = j.weightsLoaded === true;
+      return { ok: true, weights: yoloAvailable ? (j.weights ?? null) : null, fallback: j.fallback };
+    } catch {
+      return { ok: false };
+    }
+  }
 }

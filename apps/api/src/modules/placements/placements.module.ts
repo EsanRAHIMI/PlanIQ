@@ -2,8 +2,14 @@ import { Module, Injectable, Controller, Get, Post, Patch, Delete, Param, Body, 
 import { MongooseModule, InjectModel } from '@nestjs/mongoose';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Model } from 'mongoose';
-import { batchPlacementSchema, suggestPlacements, DEFAULT_RULE_CONFIG, runQualityPipeline } from '@planiq/shared';
-import { MODELS, PlacementSchema, LayerSchema, DetectedRoomSchema, DetectedZoneSchema, FloorSchema } from '../../db/schemas';
+import {
+  batchPlacementSchema, suggestPlacements, DEFAULT_RULE_CONFIG, runQualityPipeline,
+  AI_SETTINGS_KEY, normalizeAiSettings, countsFromQcSummary,
+} from '@planiq/shared';
+import {
+  MODELS, PlacementSchema, LayerSchema, DetectedRoomSchema, DetectedZoneSchema,
+  FloorSchema, AnalysisRunSchema, SettingSchema,
+} from '../../db/schemas';
 import { ZodValidationPipe } from '../../common/zod.pipe';
 import { CurrentUser, AuthUser } from '../../common/decorators';
 
@@ -38,6 +44,8 @@ export class PlacementsService {
     @InjectModel(MODELS.DetectedRoom) private rooms: Model<any>,
     @InjectModel(MODELS.DetectedZone) private zones: Model<any>,
     @InjectModel(MODELS.Floor) private floors: Model<any>,
+    @InjectModel(MODELS.AnalysisRun) private analysisRuns: Model<any>,
+    @InjectModel(MODELS.Setting) private settings: Model<any>,
   ) {}
 
   async byFloor(user: AuthUser, floorId: string, debug = false) {
@@ -89,12 +97,35 @@ export class PlacementsService {
     const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean();
     if (!floor) throw new NotFoundException('Floor not found');
 
+    const settingDoc = await this.settings.findOne({ scope: 'tenant', tenantId: user.tenantId, key: AI_SETTINGS_KEY }).lean();
+    const aiSettings = normalizeAiSettings((settingDoc as any)?.value);
+    const startedAt = new Date();
+    const run = await this.analysisRuns.create({
+      tenantId: user.tenantId,
+      projectId: floor.projectId,
+      floorId,
+      kind: 'rules_resuggest',
+      status: 'running',
+      triggeredBy: user.id,
+      provider: 'rules',
+      modelName: '@planiq/shared rules + QC',
+      fallbackChain: ['rules_engine', 'typescript_mirror'],
+      qcSettings: aiSettings,
+      startedAt,
+    });
+
     const [roomsRaw, zonesRaw] = await Promise.all([
       this.rooms.find({ floorId, tenantId: user.tenantId }).lean(),
       this.zones.find({ floorId, tenantId: user.tenantId }).lean(),
     ]);
 
     if (!roomsRaw.length) {
+      await this.analysisRuns.updateOne({ _id: run._id }, {
+        status: 'failed',
+        finishedAt: new Date(),
+        durationMs: Date.now() - startedAt.getTime(),
+        errors: ['No detected rooms on this floor'],
+      });
       throw new BadRequestException(
         'No detected rooms on this floor. Upload a plan or run floor analysis before re-suggesting devices.',
       );
@@ -137,9 +168,21 @@ export class PlacementsService {
     const visibleCount = await this.placements.countDocuments({
       floorId, tenantId: user.tenantId, hidden: { $ne: true },
     });
+    const counts = countsFromQcSummary(summary);
+    const finishedAt = new Date();
+    await this.analysisRuns.updateOne({ _id: run._id }, {
+      status: 'done',
+      finishedAt,
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      qcSummary: summary,
+      ...counts,
+      warnings: [],
+      errors: [],
+    });
+
     await this.floors.updateOne(
       { _id: floorId },
-      { 'counts.placements': visibleCount, 'analysis.qcSummary': summary },
+      { 'counts.placements': visibleCount, 'analysis.qcSummary': summary, 'analysis.latestRunId': run._id },
     );
 
     return {
@@ -150,6 +193,16 @@ export class PlacementsService {
       summary,
       replaced: removed.deletedCount ?? 0,
       roomCount: rooms.length,
+      analysisRun: {
+        id: String(run._id),
+        provider: 'rules',
+        modelName: '@planiq/shared rules + QC',
+        fallbackChain: ['rules_engine', 'typescript_mirror'],
+        durationMs: finishedAt.getTime() - startedAt.getTime(),
+        startedAt: startedAt.toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        ...counts,
+      },
     };
   }
 }
@@ -187,6 +240,8 @@ export class PlacementsController {
     { name: MODELS.DetectedRoom, schema: DetectedRoomSchema },
     { name: MODELS.DetectedZone, schema: DetectedZoneSchema },
     { name: MODELS.Floor, schema: FloorSchema },
+    { name: MODELS.AnalysisRun, schema: AnalysisRunSchema },
+    { name: MODELS.Setting, schema: SettingSchema },
   ])],
   controllers: [PlacementsController],
   providers: [PlacementsService],

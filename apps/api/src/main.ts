@@ -5,8 +5,10 @@ import { Logger } from 'nestjs-pino';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
+import { assertPlaniqSharedBuilt } from './config/ensure-shared';
 
 async function bootstrap() {
+  assertPlaniqSharedBuilt();
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.useLogger(app.get(Logger));
 

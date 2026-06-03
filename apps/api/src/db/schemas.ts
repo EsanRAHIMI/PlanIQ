@@ -75,6 +75,7 @@ export const FloorSchema = new Schema({
     jobId: String, version: Number, confidence: Number, error: String, finishedAt: Date,
     qcSummary: { type: Schema.Types.Mixed },
     rawRoomCount: Number,
+    latestRunId: oid,
   },
   counts: { rooms: { type: Number, default: 0 }, placements: { type: Number, default: 0 } },
 }, opts);
@@ -181,11 +182,47 @@ export const ExportSchema = new Schema({
   createdBy: oid,
 }, opts);
 
+/** target.id = entity/job id (string); target.key = setting key when type is "setting". */
+export const AnalysisRunSchema = new Schema({
+  tenantId: { type: oid, required: true, index: true },
+  projectId: { type: oid, required: true, index: true },
+  floorId: { type: oid, required: true, index: true },
+  kind: { type: String, enum: ['full_analysis', 'rules_resuggest'], required: true },
+  status: { type: String, enum: ['running', 'done', 'failed'], default: 'running' },
+  jobId: String,
+  triggeredBy: oid,
+  provider: {
+    type: String,
+    enum: ['cv', 'openai', 'claude', 'gemini', 'hybrid', 'rules'],
+    required: true,
+  },
+  modelName: String,
+  fallbackChain: { type: [String], default: [] },
+  qcSettings: { type: Schema.Types.Mixed, default: {} },
+  startedAt: { type: Date, required: true, default: Date.now },
+  finishedAt: Date,
+  durationMs: Number,
+  detectedSpaces: { type: Number, default: 0 },
+  acceptedSpaces: { type: Number, default: 0 },
+  rejectedSpaces: { type: Number, default: 0 },
+  acceptedDevices: { type: Number, default: 0 },
+  rejectedDevices: { type: Number, default: 0 },
+  qcSummary: { type: Schema.Types.Mixed },
+  errors: { type: [String], default: [] },
+  warnings: { type: [String], default: [] },
+}, opts);
+AnalysisRunSchema.index({ floorId: 1, startedAt: -1 });
+AnalysisRunSchema.index({ tenantId: 1, startedAt: -1 });
+
 export const AuditLogSchema = new Schema({
   tenantId: { type: oid, required: true, index: true },
   actorId: oid,
   action: { type: String, required: true },
-  target: { type: { type: String }, id: oid },
+  target: {
+    type: { type: String },
+    id: { type: String },
+    key: { type: String },
+  },
   diff: { before: Schema.Types.Mixed, after: Schema.Types.Mixed },
   ip: String, userAgent: String,
   at: { type: Date, default: Date.now },
@@ -207,7 +244,7 @@ export const MODELS = {
   Tenant: 'Tenant', User: 'User', RefreshSession: 'RefreshSession', Project: 'Project',
   Floor: 'Floor', PlanAsset: 'PlanAsset', DetectedRoom: 'DetectedRoom', DetectedZone: 'DetectedZone',
   Placement: 'Placement', Layer: 'Layer', DeviceLibrary: 'DeviceLibrary', Version: 'Version',
-  Export: 'Export', AuditLog: 'AuditLog', Setting: 'Setting',
+  Export: 'Export', AuditLog: 'AuditLog', Setting: 'Setting', AnalysisRun: 'AnalysisRun',
 } as const;
 
 export const MONGOOSE_MODELS = [
@@ -226,4 +263,5 @@ export const MONGOOSE_MODELS = [
   { name: MODELS.Export, schema: ExportSchema },
   { name: MODELS.AuditLog, schema: AuditLogSchema },
   { name: MODELS.Setting, schema: SettingSchema },
+  { name: MODELS.AnalysisRun, schema: AnalysisRunSchema },
 ];

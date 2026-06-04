@@ -114,6 +114,7 @@ export class AnalysisService {
     if (dto.label !== undefined) patch.label = dto.label;
     if (dto.centroid) patch.centroid = dto.centroid;
     if (dto.polygon) { patch.polygon = dto.polygon; patch.area = polygonArea(dto.polygon) || room.area; }
+    if (dto.doubleHeight !== undefined) patch['meta.doubleHeight'] = dto.doubleHeight; // engine relocates ceiling devices
 
     if (dto.type && dto.type !== room.type) {
       patch.type = dto.type;

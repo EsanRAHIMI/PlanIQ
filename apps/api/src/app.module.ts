@@ -23,6 +23,7 @@ import { DevicesModule } from './modules/devices/devices.module';
 import { VersionsModule } from './modules/versions/versions.module';
 import { ExportsModule } from './modules/exports/exports.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { TrainingModule } from './modules/training/training.module';
 import { HealthModule } from './modules/health/health.module';
 
 function prettyTransportIfAvailable(nodeEnv: string) {
@@ -62,7 +63,7 @@ function prettyTransportIfAvailable(nodeEnv: string) {
     StorageModule, AiModule, QueueModule,
     AuthModule, ProjectsModule, FloorsModule, AssetsModule, AnalysisModule,
     PlacementsModule, DevicesModule, VersionsModule, ExportsModule, AnalysisRunsModule,
-    AdminModule, HealthModule,
+    AdminModule, TrainingModule, HealthModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

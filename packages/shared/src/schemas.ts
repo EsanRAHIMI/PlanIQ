@@ -36,6 +36,9 @@ export const updateRoomSchema = z.object({
   reviewStatus: z.enum(['ai_detected', 'rejected', 'accepted', 'user_corrected']).optional(),
   centroid: z.tuple([z.number(), z.number()]).optional(),
   polygon: z.array(z.array(z.number())).optional(),
+  // Manual marking: flag a space as double-height so ceiling devices (Wi-Fi/speakers)
+  // relocate to the nearest normal-ceiling space per the customer rule.
+  doubleHeight: z.boolean().optional(),
 }).refine((b) => Object.keys(b).length > 0, { message: 'No fields to update' });
 
 export const zoneSchema = z.object({
@@ -99,6 +102,11 @@ export const analysisResultSchema = z.object({
     })),
   }).optional(),
   rawRoomCount: z.number().optional(),
+  scale: z.object({
+    metersPerPixel: z.number(),
+    confidence: z.number(),
+    source: z.string(),
+  }).optional(),
 });
 
 // ── API DTO schemas ──

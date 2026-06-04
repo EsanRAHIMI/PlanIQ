@@ -8,6 +8,7 @@ from ..pipeline.geometry import extract_walls, segment_rooms
 from ..pipeline.ocr import read_text
 from ..pipeline.detect import detect_symbols
 from ..pipeline.fusion import fuse
+from ..pipeline import architecture as arch
 from ..rules.engine import suggest
 from ..rules.quality import filter_rooms, apply_placement_qc, build_summary
 
@@ -18,6 +19,11 @@ class CvProvider(VisionProvider):
         pp = preprocess(bgr)
         walls = extract_walls(pp["binary"])
         rooms_geo = segment_rooms(walls, pp["extent"])
+        # Geometry intelligence: read doors, columns, stairs and scale from the drawing,
+        # and correct room boundaries to right angles.
+        geo = arch.geometry_layer(pp["binary"])
+        for rg in rooms_geo:
+            rg["polygon"] = arch.snap_orthogonal(rg["polygon"])
         if not rooms_geo:
             warnings.append("no enclosed rooms detected; try higher DPI or check plan quality")
         texts = read_text(bgr)
@@ -28,6 +34,16 @@ class CvProvider(VisionProvider):
             warnings.append("symbol detector returned nothing (untrained weights?)")
 
         raw_rooms, zones = fuse(rooms_geo, texts, detections)
+        # Type spaces from geometry where OCR was silent (stairs, perimeter entrances).
+        geo_typed = arch.type_rooms_by_geometry(raw_rooms, geo)
+        zones = zones + arch.geometry_zones(geo)
+        if geo["doors"]:
+            warnings.append(
+                f"Geometry: {len(geo['doors'])} doors ({sum(d['perimeter'] for d in geo['doors'])} entrances), "
+                f"{len(geo['columns'])} columns, {len(geo['stairs'])} staircase(s); "
+                f"scale ≈ {geo['scale']['metersPerPixel']:.4f} m/px ({geo['scale']['source']})"
+                if geo.get("scale") else f"Geometry: {len(geo['doors'])} doors detected"
+            )
         accepted_rooms, rejected_rooms, room_rejections = filter_rooms(raw_rooms, qc)
 
         raw_placements = suggest(accepted_rooms, zones)
@@ -66,8 +82,9 @@ class CvProvider(VisionProvider):
             provider="cv", warnings=warnings,
             qcSummary=qc_summary,
             rawRoomCount=len(raw_rooms),
+            scale=geo.get("scale"),
             providerUsed="cv",
-            modelName="opencv+yolo+ocr+rules",
+            modelName="opencv+geometry+ocr+rules",
             fallbackChain=["cv"],
             errors=[],
         )

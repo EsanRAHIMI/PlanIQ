@@ -3,45 +3,50 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-# ── Limits (villa-scale, conservative) ────────────────────────────────────────
-MAX_ROOMS_PER_FLOOR = 18
+# ── Limits ────────────────────────────────────────────────────────────────────
+# P5 philosophy: the rule engine now places devices deliberately per the customer's
+# engineering rules, so QC is a GUARDRAIL (sanity caps, dedup, consistency) — not a
+# gate that re-rejects by room type. Caps are villa-scale, not conservative throttles.
+MAX_ROOMS_PER_FLOOR = 24
 MIN_ROOM_AREA = 0.012          # normalized; drop tiny CV fragments
 MIN_ROOM_CONFIDENCE = 0.48
-MAX_DEVICES_PER_FLOOR = 32
+MAX_DEVICES_PER_FLOOR = 160
 MIN_DEVICE_CONFIDENCE = 0.62
-MAX_DEVICES_PER_ROOM = 3
+# Per-room budget counts ONLY room-anchored devices (perimeter/zone devices like the
+# building cameras and gate motor are excluded), so they no longer starve a room.
+MAX_DEVICES_PER_ROOM = 12
 
 PER_DEVICE_LIMITS: Dict[str, int] = {
-    "CCTV": 6,
-    "WIFI_AP": 3,
-    "DATA_SOCKET": 5,
-    "LIGHT_SWITCH": 6,
-    "SENSOR": 4,
-    "THERMOSTAT": 3,
-    "SPEAKER": 2,
-    "VOLUME_CONTROL": 1,
-    "PROJECTOR": 1,
-    "SCREEN": 1,
-    "CURTAIN_MOTOR": 3,
-    "SMART_LOCK": 2,
-    "INTERCOM_SCREEN": 1,
-    "INTERCOM_BELL": 1,
-    "GATE_MOTOR": 1,
+    "CCTV": 12,
+    "WIFI_AP": 8,
+    "DATA_SOCKET": 20,
+    "LIGHT_SWITCH": 30,
+    "SENSOR": 20,
+    "THERMOSTAT": 10,
+    "SPEAKER": 24,
+    "VOLUME_CONTROL": 12,
+    "PROJECTOR": 2,
+    "SCREEN": 2,
+    "CURTAIN_MOTOR": 8,
+    "SMART_LOCK": 3,
+    "INTERCOM_SCREEN": 6,
+    "INTERCOM_BELL": 4,
+    "GATE_MOTOR": 2,
     "ELV_RACK": 1,
-    "SWITCH": 1,
-    "NVR": 1,
+    "SWITCH": 2,
+    "NVR": 2,
 }
 
-INDOOR_MAIN = {"living_room", "majlis", "master_bedroom", "bedroom", "dining", "kitchen", "sitting_area"}
-INDOOR_SERVICE = {"service_area", "store", "bathroom", "maid_room"}
-CIRCULATION = {"corridor", "entrance", "staircase", "lift", "main_door"}
-OUTDOOR = {"outdoor", "garden", "parking", "gate", "roof"}
-SKIP_PLACEMENT = OUTDOOR | {"bathroom", "roof", "lift", "store"}
-
-WIFI_ROOMS = {"living_room", "majlis", "sitting_area"}
-DATA_ROOMS = {"living_room", "majlis", "master_bedroom"}
-SWITCH_ROOMS = {"entrance", "main_door", "corridor", "living_room", "majlis", "master_bedroom"}
-MAIN_ENTERTAINMENT = {"majlis", "living_room"}
+INDOOR_MAIN = {"living_room", "majlis", "master_bedroom", "bedroom", "dining", "kitchen", "sitting_area", "dressing"}
+INDOOR_SERVICE = {"service_area", "store", "store_indoor", "bathroom", "maid_room", "laundry", "pantry", "electrical_room"}
+CIRCULATION = {"corridor", "entrance", "main_entrance", "guest_entrance", "service_entrance", "staircase", "lift", "main_door"}
+OUTDOOR = {"outdoor", "garden", "parking", "gate", "roof", "pool", "bbq", "outdoor_seating", "store_outdoor"}
+# Pure-outdoor spaces never host an indoor device (cameras are exempt). Service rooms,
+# bathrooms (toilets get sensors), kitchens (get cameras) and stores are NOT skipped —
+# the engine targets them deliberately per the customer rules.
+SKIP_PLACEMENT = OUTDOOR
+# Dedup: two same-code devices closer than this (normalized) are treated as duplicates.
+DEDUP_DIST = 0.012
 
 
 def space_category(room_type: str) -> str:
@@ -153,6 +158,7 @@ def apply_placement_qc(
     rejections: List[dict] = []
     device_counts: Dict[str, int] = {}
     room_device_counts: Dict[str, int] = {}
+    seen_positions: List[Tuple[str, float, float]] = []
 
     # Prefer higher confidence first
     ordered = sorted(placements, key=lambda p: p.get("confidence") or 0, reverse=True)
@@ -161,7 +167,8 @@ def apply_placement_qc(
         code = p["deviceCode"]
         conf = p.get("confidence") or 0
         pos = p.get("position") or {}
-        near = _nearest_room(pos.get("x", 0.5), pos.get("y", 0.5), rooms)
+        px, py = pos.get("x", 0.5), pos.get("y", 0.5)
+        near = _nearest_room(px, py, rooms)
         room_type = near["type"] if near else "unknown"
         room_label = near.get("label", room_type) if near else "unknown"
         room_id = room_label
@@ -176,45 +183,33 @@ def apply_placement_qc(
             rejected.append(out)
             rejections.append({"deviceCode": code, "reason": reason, "confidence": conf, "nearSpace": room_label})
 
-        # Consistency gate: room-based devices require at least one accepted interior space.
+        # 1) Consistency: room-based devices require at least one accepted interior space.
         if basis == "room" and not has_rooms:
             reject("No interior spaces accepted — room-based device suppressed for consistency")
             continue
-
+        # 2) Confidence floor.
         if conf < min_conf:
             reject(f"Confidence {conf:.2f} below threshold {min_conf}")
             continue
+        # 3) Dedup near-identical suggestions of the same device.
+        if any(c == code and abs(sx - px) < DEDUP_DIST and abs(sy - py) < DEDUP_DIST for c, sx, sy in seen_positions):
+            reject("Duplicate of a nearby identical device")
+            continue
+        # 4) Villa-scale sanity caps (guardrail, not policy).
         if len(accepted) >= max_devices:
             reject(f"Floor device limit ({max_devices}) reached")
             continue
-        if device_counts.get(code, 0) >= PER_DEVICE_LIMITS.get(code, 2):
-            reject(f"Max {PER_DEVICE_LIMITS.get(code, 2)} × {code} per floor")
+        if device_counts.get(code, 0) >= PER_DEVICE_LIMITS.get(code, 8):
+            reject(f"Max {PER_DEVICE_LIMITS.get(code, 8)} × {code} per floor")
             continue
-        if room_device_counts.get(room_id, 0) >= max_per_room:
+        # Per-room budget counts only ROOM-anchored devices, so perimeter/zone devices
+        # (building cameras, gate motor) never consume a room's budget.
+        if basis == "room" and room_device_counts.get(room_id, 0) >= max_per_room:
             reject(f"Max {max_per_room} devices per space ({room_label})")
             continue
-
-        # Device-specific conservative rules
-        if code == "WIFI_AP" and room_type not in WIFI_ROOMS:
-            reject("Wi-Fi AP only in central indoor zones (living/majlis/sitting)")
-            continue
-        if code == "DATA_SOCKET" and room_type not in DATA_ROOMS:
-            reject("Data points limited to main rooms")
-            continue
-        if code == "LIGHT_SWITCH" and room_type not in SWITCH_ROOMS:
-            reject("Switches placed near doors/main rooms only")
-            continue
-        if code in {"SPEAKER", "VOLUME_CONTROL", "PROJECTOR", "SCREEN"} and room_type not in MAIN_ENTERTAINMENT:
-            reject("Entertainment devices limited to majlis/living")
-            continue
-        if code == "CURTAIN_MOTOR" and room_type not in {"bedroom", "master_bedroom", "living_room", "majlis"}:
-            reject("Curtain motors limited to primary rooms")
-            continue
-        if near and room_type in SKIP_PLACEMENT and code not in {"CCTV"}:
-            reject(f"No indoor devices in {room_type} spaces")
-            continue
-        if code == "CCTV" and near and room_type in INDOOR_MAIN and "corner" not in (p.get("rationale") or "").lower():
-            reject("Indoor CCTV limited to perimeter/circulation")
+        # 5) Never place a non-camera indoor device in a pure-outdoor space.
+        if basis == "room" and near and room_type in SKIP_PLACEMENT and code != "CCTV":
+            reject(f"No indoor devices in outdoor {room_type}")
             continue
 
         meta.update({"qcStatus": "accepted", "rejectionReason": None, "nearSpace": room_label})
@@ -228,7 +223,9 @@ def apply_placement_qc(
             accepted_p["label"] = accepted_p.get("label") or f"{code} (perimeter/zone fallback)"
         accepted.append(accepted_p)
         device_counts[code] = device_counts.get(code, 0) + 1
-        room_device_counts[room_id] = room_device_counts.get(room_id, 0) + 1
+        if basis == "room":
+            room_device_counts[room_id] = room_device_counts.get(room_id, 0) + 1
+        seen_positions.append((code, px, py))
 
     return accepted, rejected, rejections
 

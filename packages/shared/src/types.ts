@@ -101,6 +101,8 @@ export interface AnalysisResult {
   warnings: string[];
   qcSummary?: AnalysisQcSummary;
   rawRoomCount?: number;
+  /** Geometry intelligence: estimated drawing scale (metres per pixel). */
+  scale?: { metersPerPixel: number; confidence: number; source: string };
   /** Traceability fields returned by the AI service. */
   providerUsed?: 'cv' | 'openai' | 'claude' | 'gemini' | 'hybrid' | 'rules';
   modelName?: string | null;

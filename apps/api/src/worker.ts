@@ -251,6 +251,11 @@ async function handleAnalyze(data: any) {
   });
 
   floor.counts = { rooms: acceptedRoomCount, placements: acceptedCount };
+  // Persist the estimated drawing scale (auto-calibrated from door widths). Keep any
+  // existing user-calibrated scale; otherwise record the estimate as uncalibrated.
+  if (result.scale?.metersPerPixel && !floor.scale?.calibrated) {
+    floor.scale = { metersPerPixel: result.scale.metersPerPixel, calibrated: false };
+  }
   floor.analysis = {
     status: 'done',
     confidence: result.confidence,

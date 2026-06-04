@@ -16,7 +16,10 @@ def preprocess(bgr: np.ndarray) -> dict:
         binary = _rotate(binary, angle)
         gray = _rotate(gray, angle)
 
-    extent = _drawing_extent(binary)
+    # Compute the drawing extent on the de-texted line mask so a sparse title block /
+    # legend / notes in a margin doesn't inflate the plan bounds.
+    from .geometry import remove_text
+    extent = _drawing_extent(remove_text(binary))
     return {"gray": gray, "binary": binary, "skew": angle, "extent": extent,
             "h": bgr.shape[0], "w": bgr.shape[1]}
 

@@ -5,7 +5,33 @@ import type Konva from 'konva';
 import { useEditor } from '@/features/editor/store';
 import { DEVICE_BY_CODE, DEFAULT_LAYERS } from '@planiq/shared';
 
-interface Props { rasterUrl: string | null; width: number; height: number; }
+interface Props {
+  rasterUrl: string | null;
+  width: number;
+  height: number;
+  /** Persist a space move (normalized centroid + polygon) after a drag. */
+  onRoomMoved?: (id: string, centroid: [number, number], polygon: number[][]) => void;
+}
+
+/** Outline + fill colour for each space review status. */
+const ROOM_STYLE: Record<string, { stroke: string; fill: string; tag: string }> = {
+  ai_detected:    { stroke: '#2563EB', fill: 'rgba(37,99,235,0.10)',  tag: 'AI' },
+  accepted:       { stroke: '#16A34A', fill: 'rgba(22,163,74,0.12)',  tag: '✓' },
+  user_corrected: { stroke: '#D97706', fill: 'rgba(217,119,6,0.12)',  tag: '✎' },
+  rejected:       { stroke: '#EF4444', fill: 'rgba(239,68,68,0.07)',  tag: '✕' },
+};
+const roomStyle = (s?: string) => ROOM_STYLE[s ?? 'ai_detected'] ?? ROOM_STYLE.ai_detected;
+const roomBox = (centroid: number[], half = 0.05): number[][] => {
+  const [cx, cy] = centroid;
+  return [[cx - half, cy - half], [cx + half, cy - half], [cx + half, cy + half], [cx - half, cy + half]];
+};
+const ROOM_TYPE_LABEL: Record<string, string> = {
+  bedroom: 'Bedroom', master_bedroom: 'Master Bed', maid_room: 'Maid', majlis: 'Majlis',
+  living_room: 'Living', sitting_area: 'Sitting', dining: 'Dining', kitchen: 'Kitchen',
+  corridor: 'Corridor', entrance: 'Entrance', main_door: 'Main Door', outdoor: 'Outdoor',
+  garden: 'Garden', parking: 'Parking', gate: 'Gate', staircase: 'Stairs', lift: 'Lift',
+  bathroom: 'Bathroom', store: 'Store', service_area: 'Service', roof: 'Roof',
+};
 
 const MIN_DIM = 1;
 
@@ -26,7 +52,7 @@ const LAYER_CATS_BY_NAME: Record<string, string[]> =
   Object.fromEntries(DEFAULT_LAYERS.map((l) => [l.name, l.categories]));
 
 /** Figma-lite canvas: raster background + device markers, with zoom/pan/snap/marquee-select/drag. */
-export function Canvas({ rasterUrl, width, height }: Props) {
+export function Canvas({ rasterUrl, width, height, onRoomMoved }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const panning = useRef(false);
   const spaceDown = useRef(false);
@@ -47,7 +73,10 @@ export function Canvas({ rasterUrl, width, height }: Props) {
   const zoom = useEditor((s) => s.zoom);
   const debugMode = useEditor((s) => s.debugMode);
   const layers = useEditor((s) => s.layers);
-  const { select, clearSelection, updatePlacement, setZoom, setDebugMode } = useEditor();
+  const rooms = useEditor((s) => s.rooms);
+  const roomsVisible = useEditor((s) => s.roomsVisible);
+  const selectedRoomId = useEditor((s) => s.selectedRoomId);
+  const { select, clearSelection, updatePlacement, setZoom, setDebugMode, selectRoom, patchRoomLocal, setRoomsVisible } = useEditor();
 
   useEffect(() => {
     if (!rasterUrl) { setImg(null); return; }
@@ -209,6 +238,7 @@ export function Canvas({ rasterUrl, width, height }: Props) {
         <Ctrl onClick={fitView} title="Fit plan to screen">Fit</Ctrl>
         <Ctrl onClick={() => setSnap(!snap)} active={snap} title="Snap to grid">Snap</Ctrl>
         <Ctrl onClick={() => setShowGrid(!showGrid)} active={showGrid} title="Show grid">Grid</Ctrl>
+        <Ctrl onClick={() => setRoomsVisible(!roomsVisible)} active={roomsVisible} title="Show detected spaces">Spaces</Ctrl>
         <Ctrl onClick={() => setDebugMode(!debugMode)} active={debugMode} title="Show rejected suggestions">
           {debugMode ? 'All' : 'Accepted'}
         </Ctrl>
@@ -248,6 +278,64 @@ export function Canvas({ rasterUrl, width, height }: Props) {
             ))}
           </Group>
         </Layer>
+
+        {roomsVisible && rooms.length > 0 && (
+          <Layer>
+            <Group x={groupX} y={groupY}>
+              {rooms.map((r) => {
+                const id = String(r._id ?? r.id ?? '');
+                const st = roomStyle(r.reviewStatus);
+                const poly = r.polygon && r.polygon.length >= 3 ? r.polygon : roomBox(r.centroid as number[]);
+                const pts = poly.flatMap(([px, py]) => [px * planW, py * planH]);
+                const cx = (Number(r.centroid?.[0]) || 0.5) * planW;
+                const cy = (Number(r.centroid?.[1]) || 0.5) * planH;
+                const selected = selectedRoomId === id;
+                const conf = r.confidence != null ? `${Math.round(r.confidence * 100)}%` : '';
+                const label = `${ROOM_TYPE_LABEL[r.type] ?? r.type}${conf ? ` · ${conf}` : ''}`;
+                return (
+                  <Group
+                    key={`room-${id}`}
+                    draggable
+                    onMouseDown={(e) => { e.cancelBubble = true; selectRoom(id); }}
+                    onClick={(e) => { e.cancelBubble = true; selectRoom(id); }}
+                    onMouseEnter={(e) => { const s = e.target.getStage(); if (s) s.container().style.cursor = 'move'; }}
+                    onMouseLeave={(e) => { const s = e.target.getStage(); if (s) s.container().style.cursor = cursor; }}
+                    onDragEnd={(e) => {
+                      const node = e.target;
+                      const dx = node.x() / planW;
+                      const dy = node.y() / planH;
+                      node.position({ x: 0, y: 0 });
+                      if (Math.abs(dx) < 1e-4 && Math.abs(dy) < 1e-4) return;
+                      const newPoly = poly.map(([px, py]) => [clamp01(px + dx), clamp01(py + dy)]);
+                      const newCentroid: [number, number] = [
+                        clamp01((Number(r.centroid?.[0]) || 0.5) + dx),
+                        clamp01((Number(r.centroid?.[1]) || 0.5) + dy),
+                      ];
+                      patchRoomLocal(id, { polygon: newPoly, centroid: newCentroid });
+                      onRoomMoved?.(id, newCentroid, newPoly);
+                    }}
+                  >
+                    <Line
+                      points={pts} closed fill={st.fill} stroke={st.stroke}
+                      strokeWidth={selected ? 3 : 1.5}
+                      dash={r.reviewStatus === 'rejected' ? [6, 4] : undefined}
+                      shadowBlur={selected ? 6 : 0} shadowColor={st.stroke}
+                      opacity={r.reviewStatus === 'rejected' ? 0.85 : 1}
+                    />
+                    {scale > 0.25 && (
+                      <Text text={label} x={cx - 45} y={cy - 7} width={90} align="center"
+                        fontSize={10} fontStyle="bold" fill={st.stroke} listening={false} />
+                    )}
+                    {scale > 0.25 && (
+                      <Text text={st.tag} x={cx - 45} y={cy + 6} width={90} align="center"
+                        fontSize={8} fill={st.stroke} listening={false} />
+                    )}
+                  </Group>
+                );
+              })}
+            </Group>
+          </Layer>
+        )}
 
         <Layer>
           <Group x={groupX} y={groupY}>

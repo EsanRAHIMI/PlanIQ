@@ -20,6 +20,7 @@ export interface RoomDoc {
   reviewStatus?: 'ai_detected' | 'rejected' | 'accepted' | 'user_corrected';
   aiType?: string | null;
   rejectionReason?: string | null;
+  meta?: Record<string, any>;
 }
 
 /** Editor state with an undo/redo command stack and debounced-dirty tracking. */

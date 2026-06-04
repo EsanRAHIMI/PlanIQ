@@ -248,15 +248,93 @@ export const SettingSchema = new Schema({
   value: Schema.Types.Mixed,
 }, opts);
 
+// ── Training & Feedback Center (additive; tenant-scoped) ──────────────────────
+const TrainingAnnotationSchema = new Schema({
+  deviceCode: { type: String, required: true },
+  bboxNorm: { type: [Number], required: true },   // [x,y,w,h] normalized (top-left)
+  spaceTypeHint: String,
+  source: { type: String, enum: ['heuristic', 'human'], default: 'human' },
+  status: { type: String, enum: ['pending', 'confirmed', 'false_positive'], default: 'confirmed' },
+  reviewedBy: oid, reviewedAt: Date,
+}, { _id: true });
+
+export const TrainingSampleSchema = new Schema({
+  tenantId: { type: oid, required: true, index: true },
+  name: { type: String, required: true },
+  projectType: String, floorKind: String, drawingType: String, engineer: String,
+  date: String, notes: String,
+  before: { s3Key: String, width: Number, height: Number, mime: String },
+  after: { s3Key: String, width: Number, height: Number, mime: String },
+  alignment: {
+    scale: Number, dx: Number, dy: Number, rotation: Number,
+    sameScale: Boolean, sameOrientation: Boolean,
+  },
+  annotations: { type: [TrainingAnnotationSchema], default: [] },
+  status: { type: String, enum: ['draft', 'uploaded', 'annotated', 'reviewed', 'in_dataset'], default: 'draft' },
+  split: { type: String, enum: ['train', 'val'], default: 'train' },
+  counts: { devices: { type: Number, default: 0 } },
+  createdBy: oid,
+}, opts);
+TrainingSampleSchema.index({ tenantId: 1, status: 1 });
+
+export const TrainingDatasetSchema = new Schema({
+  tenantId: { type: oid, required: true, index: true },
+  version: { type: Number, required: true },
+  sampleIds: [oid],
+  split: { train: Number, val: Number },
+  classCounts: { type: Schema.Types.Mixed, default: {} },
+  yoloKey: String, dataYamlKey: String, manifestKey: String,
+  createdBy: oid,
+}, opts);
+
+export const ModelVersionSchema = new Schema({
+  tenantId: { type: oid, required: true, index: true },
+  version: { type: Number, required: true },
+  datasetId: oid,
+  status: {
+    type: String,
+    enum: ['draft', 'training', 'trained', 'evaluated', 'approved', 'production', 'archived'],
+    default: 'draft', index: true,
+  },
+  baseModel: { type: String, default: 'yolo11n' },
+  artifactKey: String,
+  metrics: { type: Schema.Types.Mixed, default: {} },   // mAP, precision, recall, perClass, lossCurve
+  notes: String,
+  trainedBy: oid, approvedBy: oid,
+}, opts);
+
+export const PlacementPriorsSchema = new Schema({
+  tenantId: { type: oid, required: true, index: true },
+  version: { type: Number, default: 1 },
+  sampleN: { type: Number, default: 0 },
+  perSpace: { type: Schema.Types.Mixed, default: {} },
+  createdBy: oid,
+}, opts);
+
+export const PlacementFeedbackSchema = new Schema({
+  tenantId: { type: oid, required: true, index: true },
+  projectId: oid, floorId: oid,
+  deviceCode: { type: String, required: true },
+  action: { type: String, enum: ['accepted', 'rejected', 'moved', 'added', 'deleted', 'retyped'], required: true },
+  fromPos: { x: Number, y: Number }, toPos: { x: Number, y: Number },
+  nearSpace: String, runId: String,
+  userId: oid,
+  at: { type: Date, default: Date.now },
+}, { timestamps: false });
+PlacementFeedbackSchema.index({ tenantId: 1, deviceCode: 1, action: 1 });
+
 [TenantSchema, UserSchema, ProjectSchema, FloorSchema, PlanAssetSchema, DetectedRoomSchema,
  DetectedZoneSchema, PlacementSchema, LayerSchema, DeviceLibrarySchema, VersionSchema,
- ExportSchema, SettingSchema].forEach(softDelete);
+ ExportSchema, SettingSchema,
+ TrainingSampleSchema, TrainingDatasetSchema, ModelVersionSchema, PlacementPriorsSchema].forEach(softDelete);
 
 export const MODELS = {
   Tenant: 'Tenant', User: 'User', RefreshSession: 'RefreshSession', Project: 'Project',
   Floor: 'Floor', PlanAsset: 'PlanAsset', DetectedRoom: 'DetectedRoom', DetectedZone: 'DetectedZone',
   Placement: 'Placement', Layer: 'Layer', DeviceLibrary: 'DeviceLibrary', Version: 'Version',
   Export: 'Export', AuditLog: 'AuditLog', Setting: 'Setting', AnalysisRun: 'AnalysisRun',
+  TrainingSample: 'TrainingSample', TrainingDataset: 'TrainingDataset',
+  ModelVersion: 'ModelVersion', PlacementPriors: 'PlacementPriors', PlacementFeedback: 'PlacementFeedback',
 } as const;
 
 export const MONGOOSE_MODELS = [
@@ -276,4 +354,9 @@ export const MONGOOSE_MODELS = [
   { name: MODELS.AuditLog, schema: AuditLogSchema },
   { name: MODELS.Setting, schema: SettingSchema },
   { name: MODELS.AnalysisRun, schema: AnalysisRunSchema },
+  { name: MODELS.TrainingSample, schema: TrainingSampleSchema },
+  { name: MODELS.TrainingDataset, schema: TrainingDatasetSchema },
+  { name: MODELS.ModelVersion, schema: ModelVersionSchema },
+  { name: MODELS.PlacementPriors, schema: PlacementPriorsSchema },
+  { name: MODELS.PlacementFeedback, schema: PlacementFeedbackSchema },
 ];

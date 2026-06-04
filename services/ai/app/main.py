@@ -84,6 +84,20 @@ def analyze(req: AnalyzeRequest):
         raise HTTPException(status_code=422, detail=f"analysis failed: {e}")
 
 
+@app.post("/extract-devices")
+def extract_devices(req: AnalyzeRequest):
+    """Heuristic device-symbol extraction for the Training Center. Returns candidate boxes
+    (unclassified) on the AFTER plan for human review. A trained detector replaces this."""
+    bgr = _load_bgr(req)
+    from .pipeline.preprocess import preprocess
+    from .pipeline.architecture import detect_symbol_candidates
+    pp = preprocess(bgr)
+    boxes = detect_symbol_candidates(pp["binary"])
+    # default class is a placeholder the reviewer reassigns
+    return {"boxes": [{"deviceCode": "CCTV", "bboxNorm": b["bboxNorm"], "source": "heuristic"} for b in boxes],
+            "count": len(boxes)}
+
+
 @app.post("/suggest", response_model=AnalysisResult)
 def suggest_only(req: SuggestRequest):
     rooms = [r.model_dump() for r in req.rooms]

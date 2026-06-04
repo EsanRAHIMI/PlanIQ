@@ -28,6 +28,7 @@ function normalizeRoom(r: any) {
     confidence: userReviewed ? Math.max(conf, 0.9) : conf,
     source: r.source ?? 'cv',
     reviewed: r.reviewed ?? userReviewed,
+    meta: r.meta ?? {},   // carry doubleHeight etc. so the rule engine can honour it
   };
 }
 

@@ -6,6 +6,7 @@ import { api, formatApiError } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { useEditor } from '@/features/editor/store';
 import { DeviceLibraryPanel, PropertiesPanel } from '@/components/editor/Panels';
+import { SpacesPanel } from '@/components/editor/SpacesPanel';
 import { AiAnalysisDetailsPanel } from '@/components/editor/AiAnalysisDetailsPanel';
 import { AiActionsBar } from '@/components/editor/AiActionsBar';
 import { Toolbar } from '@/components/editor/Toolbar';
@@ -67,9 +68,40 @@ export default function EditorPage() {
     }
   }, []);
 
-  const { load, takeDirty, moveSelected, undo, redo, duplicateSelected, deleteSelected, clearSelection, debugMode, setDebugMode } = useEditor();
+  const { load, takeDirty, moveSelected, undo, redo, duplicateSelected, deleteSelected, clearSelection, debugMode, setDebugMode, setRooms, patchRoomLocal } = useEditor();
   const dirty = useEditor((s) => s.dirty);
   const deleted = useEditor((s) => s.deleted);
+
+  const loadRooms = useCallback(async () => {
+    try {
+      const list = await api.get<any[]>(`/floors/${floorId}/rooms`);
+      setRooms(list.map((r) => ({ ...r, id: String(r._id ?? r.id) })));
+    } catch {
+      // non-fatal — Spaces panel just shows empty
+    }
+  }, [floorId, setRooms]);
+
+  // Feedback loop: when the user removes AI-suggested devices, record it as training signal.
+  const emitDeleteFeedback = useCallback(() => {
+    const st = useEditor.getState();
+    for (const id of st.selectedIds) {
+      const p: any = st.placements[id];
+      if (p && p.source === 'ai' && !p.locked) {
+        void api.post('/training/feedback', {
+          projectId: floor?.projectId, floorId, deviceCode: p.deviceCode,
+          action: 'rejected', nearSpace: p.meta?.nearSpace,
+        }).catch(() => {});
+      }
+    }
+  }, [floorId, floor?.projectId]);
+
+  const onRoomMoved = useCallback(async (id: string, centroid: [number, number], polygon: number[][]) => {
+    try {
+      await api.patch(`/rooms/${id}`, { centroid, polygon });
+    } catch (err) {
+      toast.error(formatApiError(err, 'Move space'));
+    }
+  }, []);
 
   const loadPlacements = useCallback(async (debug: boolean) => {
     const pl = await api.get<{ placements: Placement[]; layers: any[]; qcSummary?: AnalysisQcSummary }>(
@@ -97,7 +129,7 @@ export default function EditorPage() {
           api.get<any[]>(`/projects/${flr.projectId}/floors`).then(setFloors).catch(() => {});
         }
         await loadPlacements(false);
-        await Promise.all([loadRuns(), loadCapabilities()]);
+        await Promise.all([loadRuns(), loadCapabilities(), loadRooms()]);
       } catch {
         // Auth failures handled globally in api.ts (toast + redirect).
       }
@@ -143,7 +175,7 @@ export default function EditorPage() {
       if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       else if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
       else if (meta && e.key === 'd') { e.preventDefault(); duplicateSelected(); }
-      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelected(); }
+      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); emitDeleteFeedback(); deleteSelected(); }
       else if (e.key === 'Escape') { clearSelection(); }
       else if (e.key === 'ArrowUp') moveSelected(0, -0.005);
       else if (e.key === 'ArrowDown') moveSelected(0, 0.005);
@@ -206,7 +238,7 @@ export default function EditorPage() {
 
       setQcSummary(res.summary);
       const afterCount = await loadPlacements(false);
-      await loadRuns();
+      await Promise.all([loadRuns(), loadRooms()]);
       setLiveRun(null);
 
       const run = res.analysisRun ?? (await api.get<AnalysisRunTrace | null>(`/floors/${floorId}/analysis/runs/latest`));
@@ -220,7 +252,7 @@ export default function EditorPage() {
     } finally {
       setRulesBusy(false);
     }
-  }, [floorId, floor?.projectId, loadPlacements, loadRuns, finishRunToast]);
+  }, [floorId, floor?.projectId, loadPlacements, loadRuns, loadRooms, finishRunToast]);
 
   const pollFullAnalysis = useCallback(async (): Promise<AnalysisRunTrace | null> => {
     for (let i = 0; i < 180; i++) {
@@ -273,7 +305,7 @@ export default function EditorPage() {
       await api.post(`/floors/${floorId}/analysis`, { provider: 'cv' });
       const run = await pollFullAnalysis();
       const afterCount = await loadPlacements(false);
-      await loadRuns();
+      await Promise.all([loadRuns(), loadRooms()]);
       setLiveRun(null);
 
       if (run?.id) setActiveRunId(run.id);
@@ -289,7 +321,7 @@ export default function EditorPage() {
     } finally {
       setAnalysisBusy(false);
     }
-  }, [floorId, floor, rasterUrl, capabilities, pollFullAnalysis, loadPlacements, loadRuns, finishRunToast]);
+  }, [floorId, floor, rasterUrl, capabilities, pollFullAnalysis, loadPlacements, loadRuns, loadRooms, finishRunToast]);
 
   return (
     <div className="flex h-screen flex-col">
@@ -317,9 +349,15 @@ export default function EditorPage() {
         onRestored={() => { void loadPlacements(debugMode); }}
       />
       <div className="flex flex-1 overflow-hidden">
+        <SpacesPanel floorId={floorId} onResuggest={onRulesResuggest} resuggestBusy={rulesBusy} />
         <DeviceLibraryPanel devices={devices} />
         <div className="flex flex-1 flex-col">
-          <Canvas rasterUrl={rasterUrl} width={Math.max(1, floor?.raster?.width ?? 1200)} height={Math.max(1, floor?.raster?.height ?? 900)} />
+          <Canvas
+            rasterUrl={rasterUrl}
+            width={Math.max(1, floor?.raster?.width ?? 1200)}
+            height={Math.max(1, floor?.raster?.height ?? 900)}
+            onRoomMoved={onRoomMoved}
+          />
           <AiAnalysisDetailsPanel
             runs={runs}
             activeRun={activeRun}

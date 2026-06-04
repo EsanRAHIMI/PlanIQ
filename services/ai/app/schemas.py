@@ -95,6 +95,8 @@ class AnalysisResult(BaseModel):
     warnings: List[str] = []
     qcSummary: Optional[AnalysisQcSummary] = None
     rawRoomCount: Optional[int] = None
+    # Geometry intelligence: estimated drawing scale (metres per pixel).
+    scale: Optional[Dict[str, Any]] = None
     # Traceability (persisted per run in API worker)
     providerUsed: Optional[Literal["cv", "openai", "claude", "gemini", "hybrid", "rules"]] = None
     modelName: Optional[str] = None

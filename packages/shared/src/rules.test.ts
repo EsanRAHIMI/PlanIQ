@@ -8,9 +8,17 @@ const room = (type: any, cx: number, cy: number, area = 0.1): Room => ({
 });
 
 describe('rule engine', () => {
-  it('places CCTV on the four building corners', () => {
+  it('places street-facing perimeter CCTV', () => {
     const p = suggestPlacements([room('living_room', 0.5, 0.5)], []);
-    expect(p.filter((x) => x.deviceCode === 'CCTV').length).toBeGreaterThanOrEqual(4);
+    const cams = p.filter((x) => x.deviceCode === 'CCTV');
+    expect(cams.length).toBeGreaterThanOrEqual(2);
+    expect(cams.some((c) => (c.meta as any)?.basis === 'perimeter')).toBe(true);
+  });
+
+  it('places 2 speakers + a volume control per entertainment room', () => {
+    const p = suggestPlacements([room('majlis', 0.25, 0.25), room('dining', 0.7, 0.7)], []);
+    expect(p.filter((x) => x.deviceCode === 'SPEAKER').length).toBe(4);
+    expect(p.filter((x) => x.deviceCode === 'VOLUME_CONTROL').length).toBe(2);
   });
 
   it('places gate motor + intercom bell at a gate zone', () => {

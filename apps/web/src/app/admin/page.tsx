@@ -142,7 +142,8 @@ function OverviewTab() {
             </div>
             <Ratio accepted={data.ai.accepted} rejected={data.ai.rejected} />
             <p className="mt-2 text-xs text-slate-400">
-              Training/feedback loop: acceptance ratio is the live signal. A labelled-sample registry for retraining is planned (not yet collected).
+              Acceptance ratio is the live feedback signal. Manage BEFORE/AFTER samples, annotations and datasets in{' '}
+              <Link href="/admin/training" className="font-medium text-brand hover:underline">Training &amp; Feedback</Link>.
             </p>
           </section>
 

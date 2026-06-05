@@ -36,9 +36,13 @@ export function AppHeader({ breadcrumbs }: { breadcrumbs?: Crumb[] }) {
   const inProjects = pathname === '/dashboard' || pathname.startsWith('/projects') || pathname.startsWith('/editor');
   const inAdmin = pathname.startsWith('/admin');
 
+  const inTraining = pathname.startsWith('/admin/training');
   const nav: { label: string; href: string; active: boolean }[] = [
     { label: 'Projects', href: '/dashboard', active: inProjects },
-    ...(isAdmin ? [{ label: 'Admin', href: '/admin', active: inAdmin }] : []),
+    ...(isAdmin ? [
+      { label: 'Training', href: '/admin/training', active: inTraining },
+      { label: 'Admin', href: '/admin', active: inAdmin && !inTraining },
+    ] : []),
   ];
 
   return (
@@ -84,6 +88,7 @@ export function AppHeader({ breadcrumbs }: { breadcrumbs?: Crumb[] }) {
               </div>
               <nav className="py-1 text-sm">
                 <MenuLink href="/dashboard" onClick={() => setOpen(false)}>Projects</MenuLink>
+                {isAdmin && <MenuLink href="/admin/training" onClick={() => setOpen(false)}>Training &amp; Feedback</MenuLink>}
                 {isAdmin && <MenuLink href="/admin" onClick={() => setOpen(false)}>Admin Control Center</MenuLink>}
                 <button
                   role="menuitem"

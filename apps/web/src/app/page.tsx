@@ -6,7 +6,7 @@ export default function Home() {
       <div className="text-sm font-bold tracking-widest text-brand">PLANIQ</div>
       <h1 className="mt-3 text-5xl font-bold leading-tight">Automatic device placement<br />on villa floor plans.</h1>
       <p className="mt-5 max-w-2xl text-lg text-slate-600">
-        Upload a plan. PlanIQ analyzes every floor with a self-hosted CV pipeline (YOLO + OpenCV + OCR),
+        Upload a plan. PlanIQ analyzes every floor with a self-hosted computer-vision pipeline (OpenCV geometry + OCR),
         suggests engineering-correct CCTV, Wi-Fi, ELV and smart-home placements, and lets you edit everything
         on a fast canvas — then export a client-ready PDF.
       </p>

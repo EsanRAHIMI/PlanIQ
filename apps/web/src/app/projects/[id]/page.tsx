@@ -8,12 +8,17 @@ import { api, formatApiError } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { ProcessingTimeline } from '@/components/upload/ProcessingTimeline';
 import { AppHeader } from '@/components/AppHeader';
+import { StatusPill } from '@/components/StatusPill';
+import { ProjectLifecycle } from '@/components/project/ProjectLifecycle';
+import { ExportOptionsModal } from '@/components/delivery/ExportOptionsModal';
 import { usePlanUpload } from '@/hooks/usePlanUpload';
+import type { ExportOptions } from '@planiq/shared';
 
 export default function ProjectPage() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<any>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -38,11 +43,22 @@ export default function ProjectPage() {
     }
   }
 
-  async function exportPdf() {
+  async function patchStatus(status: string) {
+    try {
+      await api.patch(`/projects/${id}`, { status });
+      toast.success(status === 'review' ? 'Design approved — marked in review'
+        : status === 'delivered' ? 'Project marked delivered'
+        : status === 'archived' ? 'Project archived' : 'Updated');
+      await refresh();
+    } catch (err) { toast.error(formatApiError(err, 'Update project')); }
+  }
+
+  async function runExport(opts: ExportOptions) {
+    setExportOpen(false);
     setExporting(true);
     const toastId = toast.loading('Preparing PDF export…');
     try {
-      const { exportId } = await api.post<any>(`/projects/${id}/export`, { includeLegend: true, includeSchedule: true });
+      const { exportId } = await api.post<any>(`/projects/${id}/export`, opts);
       toast.loading('Rendering floors & device schedule…', { id: toastId });
 
       let attempts = 0;
@@ -95,7 +111,10 @@ export default function ProjectPage() {
       <main className="mx-auto max-w-6xl px-6 py-8">
       <header className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">{project.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-slate-900">{project.name}</h1>
+            <StatusPill status={project.status} />
+          </div>
           <p className="text-sm text-slate-500">
             {project.client?.name ?? 'No client'} · {floorCount} floor{floorCount === 1 ? '' : 's'}
           </p>
@@ -104,12 +123,31 @@ export default function ProjectPage() {
           <button className="btn-ghost" onClick={() => fileRef.current?.click()} disabled={uploading}>
             {uploading ? 'Processing…' : 'Upload plan'}
           </button>
-          <button className="btn-primary" onClick={exportPdf} disabled={exporting || floorCount === 0}>
+          <button className="btn-primary" onClick={() => setExportOpen(true)} disabled={exporting || floorCount === 0}>
             {exporting ? 'Exporting…' : 'Export PDF'}
           </button>
           <input ref={fileRef} type="file" accept=".pdf,.png,.jpg,.jpeg" hidden onChange={onFile} />
         </div>
       </header>
+
+      <div className="mt-6">
+        <ProjectLifecycle
+          project={project}
+          onExport={() => setExportOpen(true)}
+          onUpload={() => fileRef.current?.click()}
+          onPatchStatus={patchStatus}
+          busy={{ upload: uploading, export: exporting }}
+        />
+      </div>
+
+      <ExportOptionsModal
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        floors={(project.floors ?? []).map((f: any) => ({ id: f._id, name: f.name }))}
+        defaultClientName={project.client?.name}
+        busy={exporting}
+        onSubmit={runExport}
+      />
 
       <ProcessingTimeline
         visible={showTimeline}
@@ -123,11 +161,11 @@ export default function ProjectPage() {
           <Link key={f._id} href={`/editor/${f._id}`} className="card p-5 transition hover:border-slate-300 hover:shadow-md">
             <div className="flex items-center justify-between">
               <div className="font-semibold text-slate-900">{f.name}</div>
-              <AnalysisBadge status={f.analysis?.status} />
+              <StatusPill status={f.analysis?.status ?? 'none'} />
             </div>
             <div className="mt-1 text-xs text-slate-500">{f.kind} · level {f.level}</div>
             <div className="mt-4 flex gap-4 text-xs text-slate-500">
-              <span>{f.counts?.rooms ?? 0} rooms</span>
+              <span>{f.counts?.rooms ?? 0} spaces</span>
               <span>{f.counts?.placements ?? 0} devices</span>
             </div>
           </Link>
@@ -192,17 +230,3 @@ function EmptyFloorsState({
   );
 }
 
-function AnalysisBadge({ status }: { status?: string }) {
-  const map: Record<string, string> = {
-    done: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    processing: 'bg-sky-50 text-sky-700 border-sky-200',
-    queued: 'bg-slate-50 text-slate-600 border-slate-200',
-    failed: 'bg-red-50 text-red-700 border-red-200',
-    none: 'bg-slate-50 text-slate-500 border-slate-200',
-  };
-  return (
-    <span className={`rounded-full border px-2 py-0.5 text-xs ${map[status ?? 'none']}`}>
-      {status ?? 'none'}
-    </span>
-  );
-}

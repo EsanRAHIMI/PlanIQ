@@ -7,7 +7,7 @@ import { toast } from '@/lib/toast';
 import { useEditor } from '@/features/editor/store';
 import { DeviceLibraryPanel, PropertiesPanel } from '@/components/editor/Panels';
 import { SpacesPanel } from '@/components/editor/SpacesPanel';
-import { AiAnalysisDetailsPanel } from '@/components/editor/AiAnalysisDetailsPanel';
+import { AiWorkspacePanel } from '@/components/editor/AiWorkspacePanel';
 import { AiActionsBar } from '@/components/editor/AiActionsBar';
 import { Toolbar } from '@/components/editor/Toolbar';
 import { VersionsModal } from '@/components/editor/VersionsModal';
@@ -38,6 +38,8 @@ export default function EditorPage() {
   const [rulesBusy, setRulesBusy] = useState(false);
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [capabilities, setCapabilities] = useState<AiCapabilities | null>(null);
+  const [zones, setZones] = useState<any[]>([]);
+  const [priors, setPriors] = useState<any>(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [runs, setRuns] = useState<AnalysisRunTrace[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -80,6 +82,10 @@ export default function EditorPage() {
       // non-fatal — Spaces panel just shows empty
     }
   }, [floorId, setRooms]);
+
+  const loadZones = useCallback(async () => {
+    try { setZones(await api.get<any[]>(`/floors/${floorId}/zones`)); } catch { /* non-fatal */ }
+  }, [floorId]);
 
   // Feedback loop: when the user removes AI-suggested devices, record it as training signal.
   const emitDeleteFeedback = useCallback(() => {
@@ -129,7 +135,8 @@ export default function EditorPage() {
           api.get<any[]>(`/projects/${flr.projectId}/floors`).then(setFloors).catch(() => {});
         }
         await loadPlacements(false);
-        await Promise.all([loadRuns(), loadCapabilities(), loadRooms()]);
+        await Promise.all([loadRuns(), loadCapabilities(), loadRooms(), loadZones()]);
+        api.get<any>('/training/priors').then(setPriors).catch(() => {}); // admin-only; graceful
       } catch {
         // Auth failures handled globally in api.ts (toast + redirect).
       }
@@ -238,7 +245,7 @@ export default function EditorPage() {
 
       setQcSummary(res.summary);
       const afterCount = await loadPlacements(false);
-      await Promise.all([loadRuns(), loadRooms()]);
+      await Promise.all([loadRuns(), loadRooms(), loadZones()]);
       setLiveRun(null);
 
       const run = res.analysisRun ?? (await api.get<AnalysisRunTrace | null>(`/floors/${floorId}/analysis/runs/latest`));
@@ -252,7 +259,7 @@ export default function EditorPage() {
     } finally {
       setRulesBusy(false);
     }
-  }, [floorId, floor?.projectId, loadPlacements, loadRuns, loadRooms, finishRunToast]);
+  }, [floorId, floor?.projectId, loadPlacements, loadRuns, loadRooms, loadZones, finishRunToast]);
 
   const pollFullAnalysis = useCallback(async (): Promise<AnalysisRunTrace | null> => {
     for (let i = 0; i < 180; i++) {
@@ -305,7 +312,7 @@ export default function EditorPage() {
       await api.post(`/floors/${floorId}/analysis`, { provider: 'cv' });
       const run = await pollFullAnalysis();
       const afterCount = await loadPlacements(false);
-      await Promise.all([loadRuns(), loadRooms()]);
+      await Promise.all([loadRuns(), loadRooms(), loadZones()]);
       setLiveRun(null);
 
       if (run?.id) setActiveRunId(run.id);
@@ -321,7 +328,7 @@ export default function EditorPage() {
     } finally {
       setAnalysisBusy(false);
     }
-  }, [floorId, floor, rasterUrl, capabilities, pollFullAnalysis, loadPlacements, loadRuns, loadRooms, finishRunToast]);
+  }, [floorId, floor, rasterUrl, capabilities, pollFullAnalysis, loadPlacements, loadRuns, loadRooms, loadZones, finishRunToast]);
 
   return (
     <div className="flex h-screen flex-col">
@@ -358,12 +365,16 @@ export default function EditorPage() {
             height={Math.max(1, floor?.raster?.height ?? 900)}
             onRoomMoved={onRoomMoved}
           />
-          <AiAnalysisDetailsPanel
+          <AiWorkspacePanel
             runs={runs}
             activeRun={activeRun}
             onSelectRun={setActiveRunId}
             liveRun={liveRun}
             qcSummary={qcSummary}
+            capabilities={capabilities}
+            zones={zones}
+            scale={floor?.scale}
+            priors={priors}
             debugMode={debugMode}
             onToggleDebug={() => setDebugMode(!debugMode)}
           />

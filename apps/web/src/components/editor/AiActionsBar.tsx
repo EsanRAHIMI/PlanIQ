@@ -8,6 +8,7 @@ import {
   fullAnalysisFallbackBadge,
   fullAnalysisHelper,
 } from '@planiq/shared';
+import { LEXICON } from '@/lib/lexicon';
 
 function EngineBadge({ children, variant = 'default' }: { children: string; variant?: 'default' | 'fallback' | 'warn' }) {
   const cls = variant === 'fallback'
@@ -55,7 +56,7 @@ export function AiActionsBar({
               onClick={onRulesResuggest}
               disabled={rulesBusy || analysisBusy}
             >
-              {rulesBusy ? 'Running rules…' : 'Re-run Rule Suggestions'}
+              {rulesBusy ? LEXICON.suggestDevicesBusy : LEXICON.suggestDevices}
             </button>
             <EngineBadge>{RULES_ENGINE_BADGE}</EngineBadge>
           </div>
@@ -72,7 +73,7 @@ export function AiActionsBar({
               disabled={rulesBusy || analysisBusy || !hasRaster}
               title={!hasRaster ? 'Upload a plan image first' : undefined}
             >
-              {analysisBusy ? 'Analyzing plan…' : 'Run Full AI Analysis'}
+              {analysisBusy ? LEXICON.analyzePlanBusy : LEXICON.analyzePlan}
             </button>
             <EngineBadge>{fullAnalysisBadge(caps)}</EngineBadge>
             <EngineBadge variant={caps.fallbackProvider === 'disabled' ? 'default' : 'fallback'}>

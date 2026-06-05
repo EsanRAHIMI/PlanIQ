@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api, loadToken, fetchMe, isAdminRole, uploadToS3, resolveMime, formatApiError } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { AppHeader } from '@/components/AppHeader';
+import { ActionButton } from '@/components/ActionButton';
 import { DEVICE_CLASSES } from '@planiq/shared';
 
 type Sample = {
@@ -70,8 +71,9 @@ export default function TrainingPage() {
   }
 
   async function extract() {
-    const r = await api.post<any>(`/training/samples/${sel._id}/extract`, {}).catch((e) => { toast.error(formatApiError(e, 'Extract')); return null; });
-    if (r) { toast.info(`Seeded ${r.seeded} candidate boxes${r.detectorAvailable ? '' : ' (detector heuristic)'}`); await openSample(sel._id); }
+    const r = await api.post<any>(`/training/samples/${sel._id}/extract`, {});
+    toast.info(`Seeded ${r.seeded} candidate boxes${r.detectorAvailable ? '' : ' (detector heuristic)'}`);
+    await openSample(sel._id);
   }
 
   async function saveAnnos() {
@@ -97,12 +99,14 @@ export default function TrainingPage() {
   };
 
   async function exportDataset() {
-    const r = await api.post<any>('/training/datasets/export', { valRatio: 0.2 }).catch((e) => { toast.error(formatApiError(e, 'Export')); return null; });
-    if (r) { toast.success(`Dataset v${r.version}: ${r.samples} samples, ${Object.values(r.classCounts).reduce((a: any, b: any) => a + b, 0)} boxes`); await refresh(); }
+    const r = await api.post<any>('/training/datasets/export', { valRatio: 0.2 });
+    toast.success(`Dataset v${r.version}: ${r.samples} samples, ${Object.values(r.classCounts).reduce((a: any, b: any) => a + b, 0)} boxes`);
+    await refresh();
   }
   async function recomputePriors() {
-    const r = await api.post<any>('/training/priors/recompute', {}).catch(() => null);
-    if (r) { toast.success(`Priors v${r.version} from ${r.sampleN} samples, ${r.spaceTypes} space types`); await refresh(); }
+    const r = await api.post<any>('/training/priors/recompute', {});
+    toast.success(`Priors v${r.version} from ${r.sampleN} samples, ${r.spaceTypes} space types`);
+    await refresh();
   }
   async function promote(id: string, status: string) {
     await api.patch(`/training/models/${id}/status`, { status }).then(refresh).catch((e) => toast.error(formatApiError(e, 'Promote')));
@@ -151,8 +155,8 @@ export default function TrainingPage() {
                   <label className="cursor-pointer rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">
                     Upload AFTER<input type="file" hidden accept="image/*,.pdf" onChange={(e) => e.target.files?.[0] && upload('after', e.target.files[0])} />
                   </label>
-                  <button onClick={extract} className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">Auto-detect</button>
-                  <button onClick={saveAnnos} className="rounded bg-slate-900 px-2 py-1 text-xs text-white">Save labels</button>
+                  <ActionButton onRun={extract} idle="Auto-detect" busy="Detecting…" success="Detected" variant="ghost" size="sm" stage="Auto-detect devices" />
+                  <ActionButton onRun={saveAnnos} idle="Save labels" busy="Saving…" success="Saved" variant="primary" size="sm" stage="Save labels" />
                 </div>
 
                 <div className="mb-2 flex items-center gap-2 text-xs">
@@ -212,8 +216,8 @@ export default function TrainingPage() {
           <aside className="col-span-3 space-y-4">
             <div className="rounded-xl border border-slate-200 bg-white p-3">
               <h2 className="mb-2 text-sm font-semibold text-slate-700">Dataset &amp; Priors</h2>
-              <button onClick={exportDataset} className="mb-1 w-full rounded bg-slate-900 px-2 py-1 text-xs text-white">Export YOLO dataset</button>
-              <button onClick={recomputePriors} className="w-full rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">Recompute priors</button>
+              <div className="mb-1"><ActionButton onRun={exportDataset} idle="Export YOLO dataset" busy="Exporting…" success="Exported" variant="primary" size="sm" fullWidth stage="Export dataset" /></div>
+              <ActionButton onRun={recomputePriors} idle="Recompute priors" busy="Computing…" success="Updated" variant="ghost" size="sm" fullWidth stage="Recompute priors" />
               {priors?.sampleN ? <p className="mt-2 text-[11px] text-slate-500">Priors: {priors.sampleN} samples · {Object.keys(priors.perSpace ?? {}).length} space types</p> : null}
               {datasets.map((d) => <p key={d._id} className="mt-1 text-[11px] text-slate-500">Dataset v{d.version}: {d.split?.train}/{d.split?.val} train/val</p>)}
             </div>

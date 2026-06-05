@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api, loadToken, ApiError } from '@/lib/api';
 import { AppHeader } from '@/components/AppHeader';
+import { StatusPill } from '@/components/StatusPill';
 
 export default function Dashboard() {
   const router = useRouter();
@@ -72,7 +73,7 @@ export default function Dashboard() {
             <Link key={p._id} href={`/projects/${p._id}`} className="card p-5 transition hover:shadow-md">
               <div className="flex items-start justify-between">
                 <div className="font-semibold">{p.name}</div>
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs">{p.status}</span>
+                <StatusPill status={p.status} />
               </div>
               <div className="mt-1 text-sm text-slate-500">{p.code ?? '—'} · {p.client?.name ?? 'No client'}</div>
               <div className="mt-4 flex gap-4 text-xs text-slate-500">

@@ -24,6 +24,10 @@ export class ProjectsController {
   @Patch(':id')
   update(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: any) { return this.svc.update(user, id, dto); }
 
+  /** Canonical single-source-of-truth lifecycle transition. */
+  @Patch(':id/status')
+  setStatus(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body: { status: string }) { return this.svc.setStatus(user, id, body?.status); }
+
   @Delete(':id')
   remove(@CurrentUser() user: AuthUser, @Param('id') id: string) { return this.svc.remove(user, id); }
 

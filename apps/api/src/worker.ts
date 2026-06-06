@@ -103,6 +103,8 @@ async function handleProcess(data: any) {
   }
   asset.status = 'scanned'; await asset.save();
   await M.Project.updateOne({ _id: asset.projectId }, { $inc: { 'stats.floors': createdFloors.length } });
+  // Advance the canonical lifecycle out of 'draft' once a plan is in.
+  await M.Project.updateOne({ _id: asset.projectId, status: 'draft' }, { $set: { status: 'in_progress' } });
   return { floors: createdFloors };
 }
 
@@ -298,13 +300,14 @@ async function handleExport(data: any) {
     await putBuffer(key, pdf, 'application/pdf');
     exp.status = 'done'; exp.s3Key = key; exp.pages = floors.length + 1; exp.sizeBytes = pdf.length; exp.finishedAt = new Date();
     await exp.save();
-    // Advance delivery lifecycle to "exported" (unless already delivered).
+    // Advance the canonical lifecycle to "exported" (unless already delivered/archived),
+    // keeping the delivery mirror in sync.
     await M.Project.updateOne(
-      { _id: data.projectId, 'delivery.status': { $ne: 'delivered' } },
-      { $set: { 'stats.lastExportAt': new Date(), 'delivery.status': 'exported', 'delivery.updatedAt': new Date() } },
+      { _id: data.projectId, status: { $nin: ['delivered', 'archived'] } },
+      { $set: { 'stats.lastExportAt': new Date(), status: 'exported', 'delivery.status': 'exported', 'delivery.updatedAt': new Date() } },
     );
     await M.Project.updateOne(
-      { _id: data.projectId, 'delivery.status': 'delivered' },
+      { _id: data.projectId, status: { $in: ['delivered', 'archived'] } },
       { $set: { 'stats.lastExportAt': new Date() } },
     );
   } catch (e: any) {

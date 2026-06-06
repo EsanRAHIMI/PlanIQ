@@ -12,3 +12,4 @@ export { countsFromQcSummary, PROVIDER_LABELS } from './analysis-run';
 export type { AnalysisRunTrace, AnalysisRunKind, AnalysisRunStatus, AiProviderKind } from './analysis-run';
 export * from './ai-transparency';
 export * from './training';
+export * from './lifecycle';

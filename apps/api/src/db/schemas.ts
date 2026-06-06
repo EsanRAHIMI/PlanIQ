@@ -46,7 +46,9 @@ export const ProjectSchema = new Schema({
   code: String,
   client: { name: String, contact: String, phone: String, email: String, address: String },
   description: String,
-  status: { type: String, enum: ['draft', 'in_progress', 'review', 'delivered', 'archived'], default: 'draft' },
+  // Canonical lifecycle (single source of truth). 'approved' + 'exported' added in the
+  // SSOT consolidation; older values remain valid (no migration needed).
+  status: { type: String, enum: ['draft', 'in_progress', 'review', 'approved', 'exported', 'delivered', 'archived'], default: 'draft' },
   units: { type: String, enum: ['m', 'ft'], default: 'm' },
   ownerId: { type: oid, ref: 'User', required: true },
   members: [{ userId: { type: oid, ref: 'User' }, role: { type: String, enum: ['manager', 'editor', 'viewer'] }, addedAt: { type: Date, default: Date.now } }],

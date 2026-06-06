@@ -27,6 +27,7 @@ export const STATUS: Record<string, { label: string; tone: StatusTone }> = {
   draft: { label: 'Draft', tone: 'neutral' },
   in_progress: { label: 'In progress', tone: 'progress' },
   review: { label: 'In review', tone: 'info' },
+  approved: { label: 'Approved', tone: 'info' },
   delivered: { label: 'Delivered', tone: 'success' },
   archived: { label: 'Archived', tone: 'neutral' },
   // analysis / jobs

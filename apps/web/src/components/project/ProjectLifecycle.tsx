@@ -108,7 +108,7 @@ function NextAction({ action, firstFloor, onExport, onUpload, onPatchStatus, bus
     case 'editor':
       return firstFloor ? <Link className={`${base} bg-slate-900 text-white`} href={`/editor/${firstFloor}`}>{action.label}</Link> : null;
     case 'approve':
-      return <ActionButton onRun={() => Promise.resolve(onPatchStatus('review'))} idle="Approve design" busy="Approving…" success="Approved" stage="Approve design" />;
+      return <ActionButton onRun={() => Promise.resolve(onPatchStatus('approved'))} idle="Approve design" busy="Approving…" success="Approved" stage="Approve design" />;
     case 'export':
       return <button className={`${base} bg-slate-900 text-white disabled:opacity-50`} onClick={onExport} disabled={busy?.export}>{busy?.export ? 'Exporting…' : 'Export client PDF'}</button>;
     case 'deliver':
@@ -122,16 +122,17 @@ function NextAction({ action, firstFloor, onExport, onUpload, onPatchStatus, bus
 function computeLifecycle(p: Project) {
   const floors = p.floors ?? [];
   const status = p.status ?? 'draft';
-  const delivery = p.delivery?.status ?? 'draft';
   const hasFloors = floors.length > 0;
   const aStatuses = floors.map((f) => f.analysis?.status ?? 'none');
   const anyFailed = aStatuses.includes('failed');
   const anyRunning = aStatuses.some((s) => s === 'queued' || s === 'processing');
   const allAnalyzed = hasFloors && aStatuses.every((s) => s === 'done');
   const placementsTotal = floors.reduce((n, f) => n + (f.counts?.placements ?? 0), 0);
-  const beyondReview = ['review', 'delivered', 'archived'].includes(status);
+  // Derive later stages from the single source of truth: project.status.
+  const beyondReview = ['review', 'approved', 'exported', 'delivered', 'archived'].includes(status);
+  const approvedPlus = ['approved', 'exported', 'delivered', 'archived'].includes(status);
   const archived = status === 'archived';
-  const delivered = status === 'delivered' || delivery === 'delivered';
+  const delivered = status === 'delivered' || status === 'archived';
 
   const st = (state: StageState) => state;
   const stages: { key: string; label: string; state: StageState }[] = [
@@ -140,9 +141,9 @@ function computeLifecycle(p: Project) {
     { key: 'analysis', label: 'Analysis', state: !hasFloors ? 'pending' : anyFailed ? 'attention' : anyRunning ? 'active' : allAnalyzed ? 'done' : 'active' },
     { key: 'spaces', label: 'Space Review', state: !allAnalyzed ? 'pending' : beyondReview ? 'done' : 'active' },
     { key: 'devices', label: 'Devices', state: placementsTotal > 0 ? (beyondReview ? 'done' : 'active') : allAnalyzed ? 'active' : 'pending' },
-    { key: 'engineer', label: 'Engineer Review', state: beyondReview ? 'done' : placementsTotal > 0 ? 'active' : 'pending' },
+    { key: 'engineer', label: 'Engineer Review', state: approvedPlus ? 'done' : placementsTotal > 0 ? 'active' : 'pending' },
     { key: 'optimize', label: 'Optimize', state: 'optional' },
-    { key: 'delivery', label: 'Delivery', state: delivered ? 'done' : ['ready', 'exported'].includes(delivery) || p.stats?.lastExportAt ? 'active' : placementsTotal > 0 ? 'active' : 'pending' },
+    { key: 'delivery', label: 'Delivery', state: delivered ? 'done' : status === 'exported' || p.stats?.lastExportAt ? 'active' : approvedPlus ? 'active' : 'pending' },
     { key: 'training', label: 'Training', state: 'optional' },
     { key: 'archive', label: 'Archive', state: archived ? 'done' : 'optional' },
   ];

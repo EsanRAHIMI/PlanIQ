@@ -51,13 +51,13 @@ const CHECK_ICON: Record<ChecklistItem['status'], React.ReactNode> = {
   fail: <X className="h-4 w-4 text-red-500" />,
 };
 
-export function ReviewPanel({ overview, onSetDelivery }: {
+export function ReviewPanel({ overview, onSetStatus }: {
   overview?: DeliveryOverview | null;
-  onSetDelivery: (status: string) => Promise<unknown>;
+  onSetStatus: (status: string) => Promise<unknown>;
 }) {
   const items = overview?.checklist ?? [];
   const hasFail = items.some((i) => i.status === 'fail');
-  const approved = overview?.deliveryStatus && overview.deliveryStatus !== 'draft';
+  const approved = ['approved', 'exported', 'delivered', 'archived'].includes(overview?.lifecycleStatus ?? '');
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <div className="lg:col-span-1"><ReadinessCard overview={overview} /></div>
@@ -80,7 +80,7 @@ export function ReviewPanel({ overview, onSetDelivery }: {
         </ul>
         <div className="mt-3 flex items-center gap-3">
           <ActionButton
-            onRun={() => onSetDelivery('ready')}
+            onRun={() => onSetStatus('approved')}
             idle={approved ? 'Re-approve design' : 'Approve design'}
             busy="Approving…" success="Approved"
             disabled={hasFail || items.length === 0}
@@ -94,12 +94,14 @@ export function ReviewPanel({ overview, onSetDelivery }: {
 }
 
 // ── Delivery ─────────────────────────────────────────────────────────────────
-export function DeliveryPanel({ overview, onExport, onSetDelivery }: {
+export function DeliveryPanel({ overview, onExport, onSetStatus, readOnly }: {
   overview?: DeliveryOverview | null;
   onExport: () => void;
-  onSetDelivery: (status: string) => Promise<unknown>;
+  onSetStatus: (status: string) => Promise<unknown>;
+  readOnly?: boolean;
 }) {
   const status = overview?.deliveryStatus ?? 'draft';
+  const lifecycle = overview?.lifecycleStatus ?? 'draft';
   const history = overview?.history ?? [];
   const latestDone = history.find((h) => h.status === 'done');
   const STATUS_LABEL: Record<string, string> = { draft: 'Draft', ready: 'Ready for review', exported: 'Exported', delivered: 'Delivered' };
@@ -115,12 +117,14 @@ export function DeliveryPanel({ overview, onExport, onSetDelivery }: {
               <StatusPill status={status} label={STATUS_LABEL[status]} />
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {status === 'draft' && <ActionButton variant="ghost" onRun={() => onSetDelivery('ready')} idle="Mark ready for review" busy="…" success="Ready" stage="Mark ready" />}
+          <div className={`flex flex-wrap items-center gap-2 ${readOnly ? 'hidden' : ''}`}>
             <button onClick={onExport} className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800">
               <FileText className="h-4 w-4" /> Export client PDF
             </button>
-            {(status === 'exported' || latestDone) && <ActionButton variant="primary" onRun={() => onSetDelivery('delivered')} idle="Mark delivered" busy="…" success="Delivered" stage="Mark delivered" />}
+            {(lifecycle === 'exported' || latestDone) && !['delivered', 'archived'].includes(lifecycle) &&
+              <ActionButton variant="primary" onRun={() => onSetStatus('delivered')} idle="Mark delivered" busy="…" success="Delivered" stage="Mark delivered" />}
+            {lifecycle === 'delivered' && <ActionButton variant="ghost" onRun={() => onSetStatus('archived')} idle="Archive project" busy="…" success="Archived" stage="Archive" />}
+            {lifecycle === 'archived' && <ActionButton variant="ghost" onRun={() => onSetStatus('in_progress')} idle="Restore project" busy="…" success="Restored" stage="Restore" />}
           </div>
         </div>
         <div className="mt-3 grid grid-cols-3 gap-3 text-center">

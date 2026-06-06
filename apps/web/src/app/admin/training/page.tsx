@@ -223,7 +223,7 @@ export default function TrainingPage() {
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-3">
               <h2 className="mb-2 text-sm font-semibold text-slate-700">Models</h2>
-              <button onClick={() => api.post('/training/models', {}).then(refresh)} className="mb-2 w-full rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50">+ Register model</button>
+              <div className="mb-2"><ActionButton onRun={async () => { await api.post('/training/models', {}); await refresh(); }} idle="+ Register model" busy="…" success="Registered" variant="ghost" size="sm" fullWidth stage="Register model" /></div>
               {models.map((m) => (
                 <div key={m._id} className="mb-1 flex items-center justify-between text-[11px]">
                   <span>v{m.version} · <span className="font-medium">{m.status}</span></span>

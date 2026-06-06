@@ -52,14 +52,14 @@ export default function ProjectPage() {
     try { await upload(file); } finally { if (fileRef.current) fileRef.current.value = ''; }
   }
 
-  async function patchStatus(status: string) {
-    try { await api.patch(`/projects/${id}`, { status }); toast.success('Updated'); await refresh(); }
-    catch (err) { toast.error(formatApiError(err, 'Update project')); }
-  }
-
-  async function setDeliveryStatus(status: string) {
-    await api.patch(`/projects/${id}/delivery/status`, { status });
-    toast.success(status === 'delivered' ? 'Marked delivered' : status === 'ready' ? 'Approved — ready for review' : 'Updated');
+  /** Single canonical lifecycle writer — every status change goes here (project.status SSOT). */
+  async function setStatus(status: string) {
+    await api.patch(`/projects/${id}/status`, { status });
+    const msg: Record<string, string> = {
+      review: 'Submitted for review', approved: 'Design approved',
+      delivered: 'Marked delivered', archived: 'Project archived', in_progress: 'Reopened',
+    };
+    toast.success(msg[status] ?? 'Updated');
     await refresh();
   }
 
@@ -107,7 +107,7 @@ export default function ProjectPage() {
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-bold text-slate-900">{project.name}</h1>
               <StatusPill status={project.status} />
-              {delivery && readiness.total > 0 && (
+              {delivery && (delivery.summary?.floors ?? 0) > 0 && (
                 <span className={`text-sm font-semibold ${readiness.score >= 90 ? 'text-emerald-600' : readiness.score >= 60 ? 'text-amber-600' : 'text-red-600'}`}>{readiness.score}% ready</span>
               )}
             </div>
@@ -138,8 +138,8 @@ export default function ProjectPage() {
         <div className="mt-6">
           {tab === 'Overview' && (
             <div className="space-y-4">
-              <ProjectLifecycle project={project} onExport={() => setExportOpen(true)} onUpload={() => fileRef.current?.click()} onPatchStatus={patchStatus} busy={{ upload: uploading, export: exporting }} hideAttention />
-              <AttentionQueue overview={delivery} onTab={goTab} />
+              <ProjectLifecycle project={project} onExport={() => setExportOpen(true)} onUpload={() => fileRef.current?.click()} onPatchStatus={setStatus} busy={{ upload: uploading, export: exporting }} hideAttention />
+              {floorCount > 0 && <AttentionQueue overview={delivery} onTab={goTab} />}
               {floorCount === 0 && <Onboarding onUpload={() => fileRef.current?.click()} uploading={uploading} session={session} />}
             </div>
           )}
@@ -164,8 +164,8 @@ export default function ProjectPage() {
             </>
           )}
 
-          {tab === 'Review' && <ReviewPanel overview={delivery} onSetDelivery={setDeliveryStatus} />}
-          {tab === 'Delivery' && <DeliveryPanel overview={delivery} onExport={() => setExportOpen(true)} onSetDelivery={setDeliveryStatus} />}
+          {tab === 'Review' && <ReviewPanel overview={delivery} onSetStatus={setStatus} />}
+          {tab === 'Delivery' && <DeliveryPanel overview={delivery} onExport={() => setExportOpen(true)} onSetStatus={setStatus} />}
 
           {tab === 'Activity' && (
             <div className="space-y-4">
@@ -184,7 +184,7 @@ export default function ProjectPage() {
                   {floorCount === 0 && <li className="py-2 text-xs text-slate-400">No floors yet.</li>}
                 </ul>
               </div>
-              <DeliveryPanel overview={delivery} onExport={() => setExportOpen(true)} onSetDelivery={setDeliveryStatus} />
+              <DeliveryPanel overview={delivery} onExport={() => setExportOpen(true)} onSetStatus={setStatus} readOnly />
             </div>
           )}
         </div>

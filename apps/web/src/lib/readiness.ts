@@ -10,6 +10,9 @@ export interface DeliveryOverview {
   deviceByCategory: Record<string, number>;
   ai: { avgConfidence: number | null; acceptedSuggestions: number; rejectedSuggestions: number };
   exportStatus: string | null;
+  /** Single source of truth: project.status (canonical lifecycle). */
+  lifecycleStatus: 'draft' | 'in_progress' | 'review' | 'approved' | 'exported' | 'delivered' | 'archived';
+  /** Derived mirror of lifecycleStatus (back-compat). */
   deliveryStatus: 'draft' | 'ready' | 'exported' | 'delivered';
   checklist: ChecklistItem[];
   history: ExportHistoryItem[];
@@ -29,10 +32,15 @@ export function computeReadiness(o?: DeliveryOverview | null): {
 } {
   const items = o?.checklist ?? [];
   if (!items.length) return { score: 0, blockers: [], passed: 0, total: 0 };
-  const sum = items.reduce((s, i) => s + WEIGHT[i.status], 0);
-  const score = Math.round((sum / items.length) * 100);
   const blockers = items.filter((i) => i.status !== 'pass');
-  return { score, blockers, passed: items.filter((i) => i.status === 'pass').length, total: items.length };
+  const passed = items.filter((i) => i.status === 'pass').length;
+  // A project with no plan / no devices is not "almost ready" — don't let passing
+  // structural checks inflate the score before there's anything to deliver.
+  if ((o?.summary?.floors ?? 0) === 0 || (o?.summary?.devices ?? 0) === 0) {
+    return { score: 0, blockers, passed, total: items.length };
+  }
+  const sum = items.reduce((s, i) => s + WEIGHT[i.status], 0);
+  return { score: Math.round((sum / items.length) * 100), blockers, passed, total: items.length };
 }
 
 export interface AttentionItem { message: string; tone: 'warn' | 'danger'; href?: string; tab?: string }
@@ -49,7 +57,7 @@ export function buildAttention(o?: DeliveryOverview | null): AttentionItem[] {
   const latest = o.history?.[0];
   if (latest?.status === 'failed') out.push({ message: `Last export failed${latest.error ? ` — ${latest.error}` : ''}`, tone: 'danger', tab: 'Delivery' });
   if (o.ai?.rejectedSuggestions > 0 && o.summary.devices === 0) out.push({ message: `${o.ai.rejectedSuggestions} suggestions withheld and none placed`, tone: 'warn', tab: 'Review' });
-  if (o.deliveryStatus === 'exported') out.push({ message: 'Exported — ready to mark delivered', tone: 'warn', tab: 'Delivery' });
+  if (o.lifecycleStatus === 'exported') out.push({ message: 'Exported — ready to mark delivered', tone: 'warn', tab: 'Delivery' });
   return out;
 }
 
@@ -57,9 +65,9 @@ export function buildAttention(o?: DeliveryOverview | null): AttentionItem[] {
 export function projectCardAttention(p: any): { label: string; tone: 'warn' | 'danger' } | null {
   const floors = p.stats?.floors ?? 0;
   const devices = p.stats?.devices ?? 0;
-  const delivery = p.delivery?.status;
   if (floors > 0 && devices === 0) return { label: 'No devices yet', tone: 'warn' };
-  if (delivery === 'exported') return { label: 'Ready to deliver', tone: 'warn' };
+  if (p.status === 'exported') return { label: 'Ready to deliver', tone: 'warn' };
+  if (p.status === 'approved') return { label: 'Ready to export', tone: 'warn' };
   return null;
 }
 

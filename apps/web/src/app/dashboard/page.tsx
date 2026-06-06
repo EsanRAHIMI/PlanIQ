@@ -39,13 +39,13 @@ export default function Dashboard() {
       setName(''); setCreating(false);
       router.push(`/projects/${p._id}`);
     } catch (err: any) {
-      const details = err?.detail?.details;
+      const details = err?.details ?? err?.detail?.details;
       if (Array.isArray(details) && details.length > 0) {
         const first = details[0];
         const msg = first?.issue || first?.message || first?.path?.join?.('.') || 'Validation failed';
         setCreateError(msg);
       } else {
-        setCreateError(err?.message ?? 'Validation failed');
+        setCreateError(err?.message ?? 'Could not create project');
       }
     }
   }

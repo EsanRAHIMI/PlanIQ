@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useParams, useRouter } from 'next/navigation';
-import { api, formatApiError } from '@/lib/api';
+import { api, formatApiError, ApiError } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { useEditor } from '@/features/editor/store';
 import { DeviceLibraryPanel, PropertiesPanel } from '@/components/editor/Panels';
@@ -70,7 +70,7 @@ export default function EditorPage() {
     }
   }, []);
 
-  const { load, takeDirty, moveSelected, undo, redo, duplicateSelected, deleteSelected, clearSelection, debugMode, setDebugMode, setRooms, patchRoomLocal } = useEditor();
+  const { load, takeDirty, requeueDirty, moveSelected, undo, redo, duplicateSelected, deleteSelected, clearSelection, debugMode, setDebugMode, setRooms, patchRoomLocal } = useEditor();
   const dirty = useEditor((s) => s.dirty);
   const deleted = useEditor((s) => s.deleted);
 
@@ -156,10 +156,15 @@ export default function EditorPage() {
         upserts: upserts.map((p: any) => ({ ...p, id: String(p.id).startsWith('loc_') ? undefined : p.id })),
         deletes: deletes.filter((d) => !d.startsWith('loc_')),
       });
-    } catch {
-      // Auth errors handled in api.ts; avoid unhandled rejection.
+    } catch (err) {
+      // Do NOT lose the user's edits on a failed save: re-queue them for the next
+      // autosave and surface the failure (401s are handled globally in api.ts).
+      requeueDirty(upserts.map((p: any) => p.id).filter(Boolean), deletes);
+      if (!(err instanceof ApiError && err.status === 401)) {
+        toast.error('Couldn’t save changes — your edits are kept and will retry automatically.', { id: 'autosave-error' });
+      }
     } finally { setSaving(false); }
-  }, [floorId, takeDirty]);
+  }, [floorId, takeDirty, requeueDirty]);
 
   useEffect(() => {
     if (dirty.size === 0 && deleted.size === 0) return;

@@ -7,8 +7,9 @@ import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Model } from 'mongoose';
 import { Queue } from 'bullmq';
 import {
-  DEVICE_BY_CODE, CRITICAL_DEVICE_CODES, DELIVERY_STATUSES, type DeliveryStatus,
+  DEVICE_BY_CODE, CRITICAL_DEVICE_CODES, type DeliveryStatus,
   type ExportOptions, type ChecklistItem,
+  PROJECT_STATUSES, canTransitionProject, deliveryMirror, projectStatusFromDelivery,
 } from '@planiq/shared';
 import {
   MODELS, ExportSchema, ProjectSchema, FloorSchema, PlacementSchema, UserSchema,
@@ -16,6 +17,7 @@ import {
 import { EXPORT_QUEUE } from '../queue/queue.module';
 import { StorageService } from '../storage/storage.service';
 import { CurrentUser, AuthUser } from '../../common/decorators';
+import { assertProjectMember } from '../../common/project-access';
 
 /** A device counts toward the deliverable when it's not hidden and not QC-rejected. */
 const isDeliverable = (p: any) =>
@@ -48,6 +50,7 @@ export class ExportsService {
   async create(user: AuthUser, projectId: string, options: any) {
     const project = await this.projects.findOne({ _id: projectId, tenantId: user.tenantId }).lean();
     if (!project) throw new NotFoundException('Project not found');
+    assertProjectMember(user, project as any, 'editor');
     const exp = await this.exports.create({
       tenantId: user.tenantId, projectId, status: 'queued', createdBy: user.id,
       options: sanitizeOptions(options),
@@ -80,9 +83,10 @@ export class DeliveryService {
     private storage: StorageService,
   ) {}
 
-  private async requireProject(user: AuthUser, projectId: string) {
+  private async requireProject(user: AuthUser, projectId: string, min: 'viewer' | 'editor' | 'manager' = 'viewer') {
     const project = await this.projects.findOne({ _id: projectId, tenantId: user.tenantId }).lean<any>();
     if (!project) throw new NotFoundException('Project not found');
+    assertProjectMember(user, project, min);
     return project;
   }
 
@@ -167,7 +171,10 @@ export class DeliveryService {
       deviceByCategory: byCategory,
       ai: { avgConfidence, acceptedSuggestions, rejectedSuggestions },
       exportStatus: latestExport?.status ?? null,
-      deliveryStatus: (project.delivery?.status ?? 'draft') as DeliveryStatus,
+      // Derived from the single source of truth (project.status) — never read the raw
+      // mirror, so even stale rows are corrected on read.
+      lifecycleStatus: (project.status ?? 'draft'),
+      deliveryStatus: deliveryMirror(project.status ?? 'draft') as DeliveryStatus,
       checklist: this.buildChecklist(floors, placements, deliverable, byFloor),
       history,
     };
@@ -239,13 +246,28 @@ export class DeliveryService {
     return items;
   }
 
+  /** Legacy delivery endpoint — now translates into the canonical project lifecycle so the
+   * single source of truth (project.status) and the delivery mirror stay consistent.
+   * Accepts either a canonical project status or a legacy delivery status. */
   async setStatus(user: AuthUser, projectId: string, status: string) {
-    if (!DELIVERY_STATUSES.includes(status as DeliveryStatus)) throw new BadRequestException('Invalid delivery status');
-    await this.requireProject(user, projectId);
-    const delivery: any = { status, updatedBy: user.id, updatedAt: new Date() };
-    if (status === 'delivered') delivery.deliveredAt = new Date();
-    await this.projects.updateOne({ _id: projectId, tenantId: user.tenantId }, { $set: { delivery } });
-    return { ok: true, status };
+    const project = await this.projects.findOne({ _id: projectId, tenantId: user.tenantId });
+    if (!project) throw new NotFoundException('Project not found');
+    assertProjectMember(user, project as any, 'manager');
+    const canonical = (PROJECT_STATUSES as readonly string[]).includes(status)
+      ? status : projectStatusFromDelivery(status);
+    const from = project.status ?? 'draft';
+    if (!canTransitionProject(from, canonical)) {
+      throw new BadRequestException(`Cannot move project from "${from}" to "${canonical}"`);
+    }
+    const now = new Date();
+    const prev = typeof project.delivery?.toObject === 'function' ? project.delivery.toObject() : (project.delivery ?? {});
+    project.status = canonical;
+    project.delivery = {
+      ...prev, status: deliveryMirror(canonical), updatedBy: user.id, updatedAt: now,
+      ...(canonical === 'delivered' ? { deliveredAt: now } : {}),
+    };
+    await project.save();
+    return { ok: true, status: canonical, deliveryStatus: deliveryMirror(canonical) };
   }
 }
 

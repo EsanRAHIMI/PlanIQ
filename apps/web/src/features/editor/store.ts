@@ -70,6 +70,8 @@ interface EditorState {
   redo: () => void;
   // persistence helpers
   takeDirty: () => { upserts: Placement[]; deletes: string[] };
+  /** Put ids back into the dirty/deleted queues after a failed save so edits aren't lost. */
+  requeueDirty: (upsertIds: string[], deleteIds: string[]) => void;
 }
 
 const snapshot = (s: EditorState): HistoryEntry => ({ placements: JSON.parse(JSON.stringify(s.placements)) });
@@ -218,4 +220,10 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ dirty: new Set(), deleted: new Set() });
     return { upserts, deletes };
   },
+
+  requeueDirty: (upsertIds, deleteIds) => set((s) => ({
+    // Re-add only ids that still exist as placements (skip ones the user undid since).
+    dirty: new Set([...s.dirty, ...upsertIds.filter((id) => s.placements[id])]),
+    deleted: new Set([...s.deleted, ...deleteIds]),
+  })),
 }));

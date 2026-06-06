@@ -10,6 +10,8 @@ export class ProjectsService {
   constructor(
     @InjectModel(MODELS.Project) private projects: Model<any>,
     @InjectModel(MODELS.Floor) private floors: Model<any>,
+    @InjectModel(MODELS.Placement) private placements: Model<any>,
+    @InjectModel(MODELS.PlacementFeedback) private feedback: Model<any>,
   ) {}
 
   async list(user: AuthUser, q?: string, page = 1, limit = 20) {
@@ -63,7 +65,28 @@ export class ProjectsService {
     this.assertMember(user, project, 'manager');
     this.applyStatus(project, toStatus, user);
     await project.save();
+    // Auto-feed the learning loop from approved designs (opt-out per project).
+    if (toStatus === 'approved' && project.feedForTraining !== false) {
+      await this.harvestFeedback(user, project).catch(() => { /* learning must never block delivery */ });
+    }
     return project;
+  }
+
+  /** Snapshot the reviewed placements of an approved project as PlacementFeedback so future
+   *  priors learn from real, engineer-approved designs. Idempotent per (project, run). */
+  private async harvestFeedback(user: AuthUser, project: any) {
+    const already = await this.feedback.findOne({ tenantId: user.tenantId, projectId: project._id, action: 'accepted' }).lean();
+    if (already) return;  // already harvested
+    const pls = await this.placements.find({ tenantId: user.tenantId, projectId: project._id, deletedAt: null })
+      .select('deviceCode position floorId meta source reviewed').lean();
+    const events = (pls as any[])
+      .filter((p) => p.source === 'ai' ? p.reviewed : true)  // engineer-kept AI suggestions + manual additions
+      .map((p) => ({
+        tenantId: user.tenantId, projectId: project._id, floorId: p.floorId,
+        deviceCode: p.deviceCode, action: p.source === 'manual' ? 'added' : 'accepted',
+        toPos: p.position, nearSpace: p.meta?.nearSpace, userId: user.id, at: new Date(),
+      }));
+    if (events.length) await this.feedback.insertMany(events);
   }
 
   private applyStatus(project: any, toStatus: string, user: AuthUser) {

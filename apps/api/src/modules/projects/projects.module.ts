@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { MODELS, ProjectSchema, FloorSchema } from '../../db/schemas';
+import { MODELS, ProjectSchema, FloorSchema, PlacementSchema, PlacementFeedbackSchema } from '../../db/schemas';
 import { ProjectsService } from './projects.service';
 import { ProjectsController } from './projects.controller';
 
@@ -8,6 +8,8 @@ import { ProjectsController } from './projects.controller';
   imports: [MongooseModule.forFeature([
     { name: MODELS.Project, schema: ProjectSchema },
     { name: MODELS.Floor, schema: FloorSchema },
+    { name: MODELS.Placement, schema: PlacementSchema },
+    { name: MODELS.PlacementFeedback, schema: PlacementFeedbackSchema },
   ])],
   controllers: [ProjectsController],
   providers: [ProjectsService],

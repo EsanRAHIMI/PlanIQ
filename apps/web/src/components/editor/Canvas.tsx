@@ -31,6 +31,7 @@ const ROOM_TYPE_LABEL: Record<string, string> = {
   corridor: 'Corridor', entrance: 'Entrance', main_door: 'Main Door', outdoor: 'Outdoor',
   garden: 'Garden', parking: 'Parking', gate: 'Gate', staircase: 'Stairs', lift: 'Lift',
   bathroom: 'Bathroom', store: 'Store', service_area: 'Service', roof: 'Roof',
+  unclassified: 'Unclassified',
 };
 
 const MIN_DIM = 1;

@@ -123,11 +123,20 @@ class AnalyzeRequest(BaseModel):
     provider: Literal["cv", "llm_fallback"] = "cv"
     fallbackProvider: str = "disabled"
     qc: Optional[QcOverrides] = None
+    # Closed learning loop (all optional): learned priors + floor type + detector gate.
+    floorType: Optional[str] = None
+    priors: Optional[Dict[str, Any]] = None
+    detectorActive: bool = False
 
 
 class SuggestRequest(BaseModel):
     rooms: List[Room]
     zones: List[Zone] = []
+    # Closed learning loop: priors nudge confidence; floorType applies floor-type policy;
+    # detectorActive turns on the YOLO detector weight (only when a model is in production).
+    floorType: Optional[str] = None
+    priors: Optional[Dict[str, Any]] = None
+    detectorActive: bool = False
 
 
 class IngestPage(BaseModel):

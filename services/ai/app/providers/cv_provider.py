@@ -14,7 +14,8 @@ from ..rules.quality import filter_rooms, apply_placement_qc, build_summary
 
 
 class CvProvider(VisionProvider):
-    def analyze(self, bgr: np.ndarray, floor_id=None, qc=None) -> AnalysisResult:
+    def analyze(self, bgr: np.ndarray, floor_id=None, qc=None,
+                floor_type=None, priors=None, detector_active=False) -> AnalysisResult:
         warnings = []
         pp = preprocess(bgr)
         walls = extract_walls(pp["binary"])
@@ -46,7 +47,8 @@ class CvProvider(VisionProvider):
             )
         accepted_rooms, rejected_rooms, room_rejections = filter_rooms(raw_rooms, qc)
 
-        raw_placements = suggest(accepted_rooms, zones)
+        raw_placements = suggest(accepted_rooms, zones, priors=priors,
+                                 floor_type=floor_type, detector_active=detector_active)
         accepted_placements, rejected_placements, placement_rejections = apply_placement_qc(
             raw_placements, accepted_rooms, qc,
         )

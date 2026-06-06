@@ -16,6 +16,33 @@ LONG_CORRIDOR_ASPECT = 3.0
 # A corridor with at least this normalized area is wide enough to act as a living hall.
 HALL_AREA = 0.06
 
+# Indoor rooms that need ceiling coverage (Wi-Fi AP + occupancy sensor) regardless of the
+# device-type-specific rules. Engineers place ~1 AP and ~1 sensor per such room — this is
+# the main recall lever (calibrated to the old_plans engineer layouts).
+COVERAGE_TYPES = {
+    "bedroom", "master_bedroom", "maid_room", "majlis", "living_room", "sitting_area",
+    "dining", "kitchen", "pantry", "dressing", "study", "office", "family_room",
+}
+# Floors whose unclassified regions are real interior rooms (OCR just failed to label them),
+# so they still deserve coverage. Site/roof unclassified regions are outdoor → excluded.
+INTERIOR_FLOORS = {"ground", "first", "second", "third", "basement", "mezzanine", "", "unknown"}
+# An unclassified region must be at least this big to be treated as a coverable indoor room.
+MIN_COVERAGE_AREA = 0.015
+
+
+def _coverage_rooms(rooms, floor_type):
+    """Indoor rooms that need ceiling coverage — typed indoor rooms PLUS sufficiently large
+    unclassified rooms on interior floors (the recall fix for untyped-but-real rooms)."""
+    interior = (floor_type or "").lower() in INTERIOR_FLOORS
+    out = []
+    for r in rooms:
+        t = r["type"]
+        if t in COVERAGE_TYPES:
+            out.append(r)
+        elif t == "unclassified" and interior and r.get("area", 0) >= MIN_COVERAGE_AREA:
+            out.append(r)
+    return out
+
 
 def _place(code, x, y, rationale, confidence=0.7, rotation=0, props=None, basis="room"):
     """basis ∈ {room, zone, perimeter}."""
@@ -80,10 +107,28 @@ def _ceiling_point(room, rooms):
     return room["centroid"], ""
 
 
-def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]],
+            priors: Dict[str, Any] = None, floor_type: str = None,
+            detector_active: bool = False) -> List[Dict[str, Any]]:
+    """Rule engine. `priors` (PlacementPriors.perSpace) and `floor_type` are the closed
+    learning loop: they NUDGE confidence and apply floor-type policy, but the rules +
+    customer engineering logic still decide WHICH devices exist. `detector_active` turns on
+    the (future) YOLO detector weight only when an approved model is in production."""
+    from .priors import apply_priors, is_no_interior_floor
+
     out: List[Dict[str, Any]] = []
     by = lambda t: [r for r in rooms if r["type"] == t]
     bb = _bbox(rooms)
+
+    # Floor-type policy (learned: engineers place no interior devices on roofs). We still
+    # allow explicit gate/parking zone devices if any exist on the sheet.
+    no_interior = is_no_interior_floor(floor_type)
+    if no_interior:
+        rooms = []                 # interior/room-anchored rules see no rooms…
+        by = lambda t: []
+        bb = None
+        if not zones:              # …and with nothing on the sheet, nothing is placed.
+            return []
 
     gate_zones = [z for z in zones if z.get("type") == "gate"]
     parking_zones = [z for z in zones if z.get("type") == "parking"]
@@ -143,16 +188,41 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]]) -> List[Di
         out.append(_place("CCTV", k["centroid"][0], k["centroid"][1], f"CCTV — {k.get('label', k['type'])}", 0.72))
 
     # ── Gate motor + outdoor intercom bell (per gate) ──────────────────────────
+    # Every villa has a gate motor + outdoor intercom + smart lock at the vehicular
+    # entrance — an engineer always places these. Prefer an explicit gate marker; if none
+    # was detected (site plans rarely label the gate), fall back to the detected
+    # parking/driveway as the access point, with an "approximate — verify at gate"
+    # rationale so the engineer confirms the exact position.
+    access_pts = []  # (x, y, basis, approx)
     for gz in gate_zones:
-        cx, cy = gz["geometry"]["coords"][0]
-        out.append(_place("GATE_MOTOR", cx, cy, "Main gate motor", 0.86, basis="zone"))
-        out.append(_place("INTERCOM_BELL", min(1, cx + 0.02), cy, "Outdoor intercom at gate / pedestrian door", 0.82, basis="zone"))
+        access_pts.append((gz["geometry"]["coords"][0][0], gz["geometry"]["coords"][0][1], "zone", False))
+    if not access_pts:
+        for pz in parking_zones[:1]:
+            access_pts.append((pz["geometry"]["coords"][0][0], pz["geometry"]["coords"][0][1], "zone", True))
+        for pr in by("parking")[:1]:
+            access_pts.append((pr["centroid"][0], pr["centroid"][1], "room", True))
+    # Every villa has a gate motor + outdoor intercom + smart lock. If nothing was detected,
+    # still place them on the SITE/GROUND sheet at the front perimeter (engineer always does;
+    # position is approximate and reviewable). Project reconcile keeps one set per project.
+    if not access_pts and (floor_type or "").lower() in ("site", "ground"):
+        if bb:
+            x0, y0, x1, y1 = bb
+            access_pts.append(((x0 + x1) / 2, y1, "perimeter", True))   # front (max-y) edge
+        else:
+            access_pts.append((0.5, 0.95, "perimeter", True))
+    for cx, cy, basis, approx in access_pts[:1]:
+        note = " (approximate — verify at gate)" if approx else ""
+        out.append(_place("GATE_MOTOR", cx, cy, f"Main gate motor{note}", 0.7 if approx else 0.86, basis=basis))
+        out.append(_place("INTERCOM_BELL", min(1, cx + 0.02), cy, f"Outdoor intercom at gate / pedestrian door{note}", 0.68 if approx else 0.82, basis=basis))
 
-    # ── Smart lock at primary entrance ─────────────────────────────────────────
+    # ── Smart lock at primary entrance (fallback: vehicular entrance) ───────────
     primary = (by("main_entrance") + by("main_door") + by("entrance"))[:1]
     if primary:
         x, y = primary[0]["centroid"]
         out.append(_place("SMART_LOCK", x, y, "Smart lock at main entrance", 0.84))
+    elif access_pts:
+        x, y, basis, approx = access_pts[0]
+        out.append(_place("SMART_LOCK", x, y, "Smart lock at main entrance (approximate — verify)", 0.68, basis=basis))
 
     # ── Intercom screens (kitchen / pantry / maid / main living / per-floor stair) ──
     for k in by("kitchen"):
@@ -194,36 +264,26 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]]) -> List[Di
         out.append(_place("SWITCH", min(1, x + 0.012), y, "Core network switch in rack", 0.8))
         out.append(_place("NVR", max(0, x - 0.012), y, "NVR in rack", 0.8))
 
-    # ── Wi-Fi APs (ceiling, room composition) ─────────────────────────────────
-    majlis, dining, living = by("majlis"), by("dining"), by("living_room")
+    # ── Wi-Fi APs — one ceiling AP per indoor coverage room (engineer density). This is the
+    #    primary recall lever: covers typed rooms AND real-but-unclassified interior rooms. ─
+    coverage = _coverage_rooms(rooms, floor_type)
+    majlis, dining = by("majlis"), by("dining")
+    covered_ids = set()
+    # Keep the guest-lobby nicety: a single AP between an adjoining Majlis and Dining.
     if majlis and dining:
         mx, my = majlis[0]["centroid"]
         dx, dy = dining[0]["centroid"]
         out.append(_place("WIFI_AP", (mx + dx) / 2, (my + dy) / 2,
                           "Ceiling Wi-Fi AP — guest lobby (Majlis↔Dining)", 0.76, props={"coverageRadius": 12}))
-    elif majlis:
-        pt, note = _ceiling_point(majlis[0], rooms)
-        out.append(_place("WIFI_AP", pt[0], pt[1], f"Ceiling Wi-Fi AP — Majlis{note}", 0.74, props={"coverageRadius": 12}))
-    if living:
-        big = _largest(living, {"living_room"})
-        pt, note = _ceiling_point(big, rooms)
-        out.append(_place("WIFI_AP", pt[0], pt[1], f"Ceiling Wi-Fi AP — main living (covers outdoor){note}", 0.74, props={"coverageRadius": 12}))
-    svc = by("service_area") or by("kitchen")
-    if svc:
-        out.append(_place("WIFI_AP", svc[0]["centroid"][0], svc[0]["centroid"][1],
-                          "Ceiling Wi-Fi AP — service area (kitchen + maid)", 0.72, props={"coverageRadius": 10}))
-    if by("master_bedroom"):
-        mb = by("master_bedroom")[0]
-        pt, note = _ceiling_point(mb, rooms)
-        out.append(_place("WIFI_AP", pt[0], pt[1], f"Ceiling Wi-Fi AP — master suite (bedroom + dressing){note}", 0.72, props={"coverageRadius": 10}))
-    beds = by("bedroom")
-    if beds:
-        # one AP per ~2 bedrooms to cover the rooms wing
-        for i in range(0, len(beds), 2):
-            grp = beds[i:i + 2]
-            cx = sum(b["centroid"][0] for b in grp) / len(grp)
-            cy = sum(b["centroid"][1] for b in grp) / len(grp)
-            out.append(_place("WIFI_AP", cx, cy, "Ceiling Wi-Fi AP — bedrooms wing", 0.7, props={"coverageRadius": 10}))
+        covered_ids.add(id(majlis[0])); covered_ids.add(id(dining[0]))
+    WIFI_MIN_AREA = 0.02   # skip the smallest rooms (a closet/store doesn't need its own AP)
+    for r in coverage:
+        if id(r) in covered_ids or r.get("area", 0) < WIFI_MIN_AREA:
+            continue
+        pt, note = _ceiling_point(r, rooms)
+        label = r.get("label", r["type"])
+        out.append(_place("WIFI_AP", pt[0], pt[1], f"Ceiling Wi-Fi AP — {label}{note}", 0.72, props={"coverageRadius": 11}))
+    # Long corridors get their own AP for circulation coverage.
     for c in by("corridor"):
         if _aspect(c) >= LONG_CORRIDOR_ASPECT:
             out.append(_place("WIFI_AP", c["centroid"][0], c["centroid"][1],
@@ -240,20 +300,29 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]]) -> List[Di
         out.append(_place("SPEAKER", min(1, cx + 0.035), cy, f"Ceiling speaker R — {label}{note}", 0.74))
         out.append(_place("VOLUME_CONTROL", cx, min(1, cy + 0.05), f"Volume control (near switches) — {label}", 0.7, props={"mountHeight": 1.3}))
 
-    # ── Motion sensors (~4 m; circulation + dressing + wet rooms, ceiling) ─────
-    for r in (by("corridor") + by("staircase") + by("bathroom") + by("dressing")
-              + by("entrance") + by("main_entrance") + by("lift")):
+    # ── Motion / occupancy sensors — engineers sensor MAIN rooms + circulation (~1.5/floor),
+    #    not every small room. Gate coverage rooms by area so precision holds. ─────────────
+    SENSOR_MIN_AREA = 0.035
+    # Sensor indoor coverage rooms (incl. real-but-unclassified interior rooms — they need
+    # occupancy too) above a size gate, plus circulation. Recall-prioritised per the brief.
+    sensor_rooms = [r for r in coverage if r.get("area", 0) >= SENSOR_MIN_AREA]
+    for extra in (by("corridor") + by("staircase") + by("entrance") + by("main_entrance") + by("lift")):
+        if extra not in sensor_rooms:
+            sensor_rooms.append(extra)
+    for r in sensor_rooms:
         x0, y0, x1, y1 = _room_bbox(r)
         cx, cy = r["centroid"]
         big = (r["type"] == "corridor" and (r["area"] >= HALL_AREA or _aspect(r) >= LONG_CORRIDOR_ASPECT))
         if big:
-            out.append(_place("SENSOR", x0 + (x1 - x0) * 0.3, y0 + (y1 - y0) * 0.3, f"Motion sensor — {r.get('label', r['type'])}", 0.72, props={"kind": "motion"}))
-            out.append(_place("SENSOR", x0 + (x1 - x0) * 0.7, y0 + (y1 - y0) * 0.7, f"Motion sensor — {r.get('label', r['type'])}", 0.72, props={"kind": "motion"}))
+            out.append(_place("SENSOR", x0 + (x1 - x0) * 0.3, y0 + (y1 - y0) * 0.3, f"Occupancy sensor — {r.get('label', r['type'])}", 0.72, props={"kind": "motion"}))
+            out.append(_place("SENSOR", x0 + (x1 - x0) * 0.7, y0 + (y1 - y0) * 0.7, f"Occupancy sensor — {r.get('label', r['type'])}", 0.72, props={"kind": "motion"}))
         else:
-            out.append(_place("SENSOR", cx, cy, f"Motion sensor — {r.get('label', r['type'])}", 0.72, props={"kind": "motion"}))
+            out.append(_place("SENSOR", cx, cy, f"Occupancy sensor — {r.get('label', r['type'])}", 0.72, props={"kind": "motion"}))
 
     # ── Thermostats (climate) ──────────────────────────────────────────────────
-    for r in (by("master_bedroom") + by("living_room") + by("majlis") + by("bedroom"))[:6]:
+    # Calibrated to engineer density (~1-2 per floor): one per main AC/living zone
+    # (majlis / living / reception hall), NOT one per bedroom (which inflated counts ~5×).
+    for r in (by("majlis") + by("living_room"))[:3]:
         out.append(_place("THERMOSTAT", r["centroid"][0], min(1, r["centroid"][1] + 0.04),
                           f"Thermostat — {r.get('label', r['type'])}", 0.72, props={"mountHeight": 1.4}))
 
@@ -282,4 +351,8 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]]) -> List[Di
         out.append(_place("DATA_SOCKET", max(0, r["centroid"][0] - 0.03), min(1, r["centroid"][1] + 0.03),
                           f"Data point — {r.get('label', r['type'])}", 0.68))
 
+    # ── Closed learning loop: nudge confidences by engineer priors (customer rules already
+    #    decided WHAT to place above; priors only weight HOW confident we are). ──────────
+    if priors:
+        apply_priors(out, rooms, priors, floor_type, detector_active=detector_active)
     return out

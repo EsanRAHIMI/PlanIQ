@@ -9,7 +9,12 @@ from typing import Any, Dict, List, Optional, Tuple
 # gate that re-rejects by room type. Caps are villa-scale, not conservative throttles.
 MAX_ROOMS_PER_FLOOR = 24
 MIN_ROOM_AREA = 0.012          # normalized; drop tiny CV fragments
-MIN_ROOM_CONFIDENCE = 0.48
+# Policy: geometry that segments a real region is KEPT for the engineer to review, not
+# silently rejected. A confidence below the review threshold flags the space as
+# "needs review" (so the floor is never empty when rooms exist) instead of dropping it.
+# A confidence rejection only happens if the caller explicitly sets minRoomConfidence.
+REVIEW_ROOM_CONFIDENCE = 0.6
+MIN_ROOM_CONFIDENCE = 0.48     # back-compat default for explicit overrides/tests
 MAX_DEVICES_PER_FLOOR = 160
 MIN_DEVICE_CONFIDENCE = 0.62
 # Per-room budget counts ONLY room-anchored devices (perimeter/zone devices like the
@@ -74,9 +79,15 @@ def _ov(overrides: Optional[dict], key: str, default):
 
 
 def filter_rooms(raw_rooms: List[dict], overrides: Optional[dict] = None) -> Tuple[List[dict], List[dict], List[dict]]:
-    """Return (accepted, rejected, reject_reasons)."""
+    """Return (accepted, rejected, reject_reasons).
+
+    Geometry-segmented regions are kept for review unless they are noise (too small),
+    duplicates, or over the per-floor cap. Confidence no longer rejects a real region by
+    default — low confidence flags it 'needs review' so the floor is never empty when
+    rooms exist. An explicit minRoomConfidence override restores hard rejection."""
     max_rooms = _ov(overrides, "maxRoomsPerFloor", MAX_ROOMS_PER_FLOOR)
-    min_conf = _ov(overrides, "minRoomConfidence", MIN_ROOM_CONFIDENCE)
+    # Only reject on confidence when the caller explicitly asks for it.
+    hard_min_conf = overrides.get("minRoomConfidence") if overrides else None
 
     candidates = sorted(raw_rooms, key=lambda r: r["area"], reverse=True)
     accepted: List[dict] = []
@@ -86,12 +97,13 @@ def filter_rooms(raw_rooms: List[dict], overrides: Optional[dict] = None) -> Tup
 
     for r in candidates:
         copy = {**r, "meta": dict(r.get("meta") or {})}
+        conf = r.get("confidence", 0) or 0
         if r["area"] < MIN_ROOM_AREA:
             copy["meta"].update({"qcStatus": "rejected", "rejectionReason": "Area too small — likely wall gap or noise"})
             rejected.append(copy)
             reasons.append({"label": r.get("label"), "type": r.get("type"), "reason": copy["meta"]["rejectionReason"]})
             continue
-        if r.get("confidence", 0) < min_conf:
+        if hard_min_conf is not None and conf < hard_min_conf:
             copy["meta"].update({"qcStatus": "rejected", "rejectionReason": "Low-confidence space detection"})
             rejected.append(copy)
             reasons.append({"label": r.get("label"), "type": r.get("type"), "reason": copy["meta"]["rejectionReason"]})
@@ -107,7 +119,18 @@ def filter_rooms(raw_rooms: List[dict], overrides: Optional[dict] = None) -> Tup
             rejected.append(copy)
             reasons.append({"label": r.get("label"), "type": r.get("type"), "reason": copy["meta"]["rejectionReason"]})
             continue
-        copy["meta"].update({"qcStatus": "accepted", "spaceCategory": space_category(r["type"])})
+        # Accepted. Flag low-confidence or unclassified spaces for review rather than dropping.
+        needs_review = conf < REVIEW_ROOM_CONFIDENCE or r.get("type") == "unclassified"
+        copy["meta"].update({
+            "qcStatus": "accepted",
+            "spaceCategory": space_category(r["type"]),
+            "needsReview": bool(needs_review),
+        })
+        if needs_review:
+            copy["meta"]["reviewReason"] = (
+                "Unclassified — confirm the room type" if r.get("type") == "unclassified"
+                else "Low-confidence type — confirm or correct"
+            )
         accepted.append(copy)
 
     return accepted, rejected, reasons

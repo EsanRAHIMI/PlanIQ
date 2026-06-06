@@ -11,6 +11,9 @@ export const ROOM_TYPES = [
   'entrance', 'main_entrance', 'guest_entrance', 'service_entrance', 'main_door',
   // outdoor
   'outdoor', 'garden', 'parking', 'gate', 'pool', 'bbq', 'outdoor_seating', 'roof',
+  // fallback: a real region the AI segmented but could not confidently type — the
+  // engineer confirms it. Never invented as a concrete type (avoids fake "bedroom"s).
+  'unclassified',
 ] as const;
 export type RoomType = (typeof ROOM_TYPES)[number];
 
@@ -39,14 +42,20 @@ export const ROOM_SYNONYMS: Record<string, RoomType> = {
   'غرفة خادمة': 'maid_room', 'خادمة': 'maid_room', 'الخدم': 'maid_room',
   // ── majlis / living ──
   'majlis': 'majlis', 'majles': 'majlis', 'mejlis': 'majlis', 'men majlis': 'majlis', 'guest majlis': 'majlis',
-  'مجلس': 'majlis', 'مجلس رجال': 'majlis',
+  'ladies majlis': 'majlis', 'women majlis': 'majlis', 'family majlis': 'majlis',
+  'مجلس': 'majlis', 'مجلس رجال': 'majlis', 'مجلس نساء': 'majlis', 'مجلس النساء': 'majlis',
   'living room': 'living_room', 'living': 'living_room', 'family living': 'living_room', 'family': 'living_room',
+  // a villa "hall" / reception hall / family hall is a large living/reception space
+  'family hall': 'living_room', 'reception hall': 'living_room', 'reception': 'living_room',
+  'main hall': 'living_room', 'entrance hall': 'living_room', 'hall': 'living_room',
   'معيشة': 'living_room', 'صالة معيشة': 'living_room', 'صالة': 'living_room', 'جلوس عائلي': 'living_room',
+  'صالة الاستقبال': 'living_room', 'استقبال': 'living_room',
   'sitting area': 'sitting_area', 'sitting': 'sitting_area', 'lounge': 'sitting_area',
   'جلوس': 'sitting_area',
   // ── dining ──
   'dining room': 'dining', 'dining': 'dining', 'dinning': 'dining',
-  'غرفة طعام': 'dining', 'طعام': 'dining', 'سفرة': 'dining',
+  'buffet': 'dining', 'breakfast': 'dining', 'nook': 'dining',
+  'غرفة طعام': 'dining', 'طعام': 'dining', 'سفرة': 'dining', 'بوفيه': 'dining',
   // ── dressing ──
   'dressing room': 'dressing', 'dressing': 'dressing', 'walk in closet': 'dressing', 'walkin': 'dressing',
   'wardrobe': 'dressing', 'closet': 'dressing',

@@ -62,12 +62,26 @@ function ceilingPoint(room: Room, rooms: Room[]): { pt: [number, number]; note: 
   return { pt: room.centroid, note: '' };
 }
 
+/** Learned-prior + floor-type options for the closed learning loop. Priors NUDGE confidence
+ *  and floor-type policy SUPPRESSES devices engineers never place on a floor; the rules +
+ *  customer logic still decide WHAT is placed. Mirrors services/ai/app/rules/priors.py. */
+export interface SuggestOptions {
+  priors?: { perSpace?: Record<string, Record<string, { rate?: number }>> };
+  floorType?: string;
+  detectorActive?: boolean;   // YOLO detector weight on only when a model is in production
+}
+const NO_INTERIOR_FLOORS = new Set(['roof']);
+
 export function suggestPlacements(
-  rooms: Room[], zones: Zone[], _cfg: RuleConfig = DEFAULT_RULE_CONFIG,
+  rooms: Room[], zones: Zone[], _cfg: RuleConfig = DEFAULT_RULE_CONFIG, opts: SuggestOptions = {},
 ): Placement[] {
   const out: Placement[] = [];
-  const byType = (t: string) => rooms.filter((r) => r.type === t);
-  const bb = bbox(rooms);
+  // Floor-type policy (learned: engineers place no interior devices on roofs).
+  const noInterior = NO_INTERIOR_FLOORS.has((opts.floorType ?? '').toLowerCase());
+  if (noInterior && zones.length === 0) return [];
+  if (noInterior) rooms = [];
+  const byType = (t: string) => (noInterior ? [] : rooms.filter((r) => r.type === t));
+  const bb = noInterior ? null : bbox(rooms);
   const gateZones = zones.filter((z) => z.type === 'gate');
   const parkingZones = zones.filter((z) => z.type === 'parking');
   const gardenZones = zones.filter((z) => z.type === 'garden');
@@ -109,16 +123,28 @@ export function suggestPlacements(
   }
   for (const k of [...byType('kitchen'), ...byType('laundry')]) out.push(place('CCTV', k.centroid[0], k.centroid[1], `CCTV — ${k.label ?? k.type}`, 0.72));
 
-  // ── Gate motor + outdoor intercom bell ──
-  for (const gz of gateZones) {
-    const [cx, cy] = gz.geometry.coords[0];
-    out.push(place('GATE_MOTOR', cx, cy, 'Main gate motor', 0.86, 0, {}, 'zone'));
-    out.push(place('INTERCOM_BELL', cx + 0.02, cy, 'Outdoor intercom at gate / pedestrian door', 0.82, 0, {}, 'zone'));
+  // ── Gate motor + outdoor intercom bell + smart lock at the vehicular entrance ──
+  // Every villa has these at the gate. Prefer an explicit gate marker; else fall back to
+  // the detected parking/driveway as the access point (site plans rarely label the gate),
+  // with an "approximate — verify at gate" note so the engineer confirms the position.
+  type AccessPt = { x: number; y: number; basis: 'zone' | 'room'; approx: boolean };
+  const accessPts: AccessPt[] = [];
+  for (const gz of gateZones) accessPts.push({ x: gz.geometry.coords[0][0], y: gz.geometry.coords[0][1], basis: 'zone', approx: false });
+  if (accessPts.length === 0) {
+    for (const pz of parkingZones.slice(0, 1)) accessPts.push({ x: pz.geometry.coords[0][0], y: pz.geometry.coords[0][1], basis: 'zone', approx: true });
+    for (const pr of byType('parking').slice(0, 1)) accessPts.push({ x: pr.centroid[0], y: pr.centroid[1], basis: 'room', approx: true });
+  }
+  const acc = accessPts[0];
+  if (acc) {
+    const note = acc.approx ? ' (approximate — verify at gate)' : '';
+    out.push(place('GATE_MOTOR', acc.x, acc.y, `Main gate motor${note}`, acc.approx ? 0.7 : 0.86, 0, {}, acc.basis));
+    out.push(place('INTERCOM_BELL', acc.x + 0.02, acc.y, `Outdoor intercom at gate / pedestrian door${note}`, acc.approx ? 0.68 : 0.82, 0, {}, acc.basis));
   }
 
-  // ── Smart lock ──
+  // ── Smart lock at primary entrance (fallback: vehicular entrance) ──
   const primary = [...byType('main_entrance'), ...byType('main_door'), ...byType('entrance')][0];
   if (primary) out.push(place('SMART_LOCK', primary.centroid[0], primary.centroid[1], 'Smart lock at main entrance', 0.84));
+  else if (acc) out.push(place('SMART_LOCK', acc.x, acc.y, 'Smart lock at main entrance (approximate — verify)', 0.68, 0, {}, acc.basis));
 
   // ── Intercom screens (kitchen / pantry / maid / main living / per-floor stair) ──
   for (const k of byType('kitchen')) out.push(place('INTERCOM_SCREEN', k.centroid[0], k.centroid[1], `Service intercom screen — ${k.label ?? 'kitchen'}`, 0.8, 0, { mountHeight: 1.4 }));
@@ -184,20 +210,25 @@ export function suggestPlacements(
     out.push(place('VOLUME_CONTROL', cx, cy + 0.05, `Volume control (near switches) — ${label}`, 0.7, 0, { mountHeight: 1.3 }));
   }
 
-  // ── Motion sensors (circulation + dressing + wet rooms) ──
-  for (const r of [...byType('corridor'), ...byType('staircase'), ...byType('bathroom'), ...byType('dressing'),
-    ...byType('entrance'), ...byType('main_entrance'), ...byType('lift')]) {
+  // ── Motion / occupancy sensors ──
+  // Calibrated to engineer layouts (~4 per occupied floor): one per main living/reception
+  // space AND per circulation space. Wet rooms / dressing are NOT sensored on the engineer
+  // ELV sheets, so they're excluded here (was over-reaching).
+  for (const r of [...byType('majlis'), ...byType('living_room'), ...byType('sitting_area'), ...byType('dining'),
+    ...byType('corridor'), ...byType('staircase'), ...byType('entrance'), ...byType('main_entrance'), ...byType('lift')]) {
     const b = roomBox(r); const big = r.type === 'corridor' && (r.area >= HALL_AREA || aspect(r) >= LONG_CORRIDOR_ASPECT);
     if (big) {
-      out.push(place('SENSOR', b.x0 + (b.x1 - b.x0) * 0.3, b.y0 + (b.y1 - b.y0) * 0.3, `Motion sensor — ${r.label ?? r.type}`, 0.72, 0, { kind: 'motion' }));
-      out.push(place('SENSOR', b.x0 + (b.x1 - b.x0) * 0.7, b.y0 + (b.y1 - b.y0) * 0.7, `Motion sensor — ${r.label ?? r.type}`, 0.72, 0, { kind: 'motion' }));
+      out.push(place('SENSOR', b.x0 + (b.x1 - b.x0) * 0.3, b.y0 + (b.y1 - b.y0) * 0.3, `Occupancy sensor — ${r.label ?? r.type}`, 0.72, 0, { kind: 'motion' }));
+      out.push(place('SENSOR', b.x0 + (b.x1 - b.x0) * 0.7, b.y0 + (b.y1 - b.y0) * 0.7, `Occupancy sensor — ${r.label ?? r.type}`, 0.72, 0, { kind: 'motion' }));
     } else {
-      out.push(place('SENSOR', r.centroid[0], r.centroid[1], `Motion sensor — ${r.label ?? r.type}`, 0.72, 0, { kind: 'motion' }));
+      out.push(place('SENSOR', r.centroid[0], r.centroid[1], `Occupancy sensor — ${r.label ?? r.type}`, 0.72, 0, { kind: 'motion' }));
     }
   }
 
   // ── Thermostats ──
-  for (const r of [...byType('master_bedroom'), ...byType('living_room'), ...byType('majlis'), ...byType('bedroom')].slice(0, 6)) {
+  // Calibrated to engineer density (~1-2 per floor): one per main AC/living zone
+  // (majlis / living / reception hall), NOT one per bedroom (which inflated counts ~5×).
+  for (const r of [...byType('majlis'), ...byType('living_room')].slice(0, 3)) {
     out.push(place('THERMOSTAT', r.centroid[0], r.centroid[1] + 0.04, `Thermostat — ${r.label ?? r.type}`, 0.72, 0, { mountHeight: 1.4 }));
   }
 
@@ -228,5 +259,34 @@ export function suggestPlacements(
     out.push(place('DATA_SOCKET', r.centroid[0] - 0.03, r.centroid[1] + 0.03, `Data point — ${r.label ?? r.type}`, 0.68));
   }
 
+  // ── Closed learning loop: nudge confidence by engineer priors (rules already decided
+  //    WHAT to place; priors only weight HOW confident, upward-only so recall isn't hurt). ──
+  if (opts.priors?.perSpace) applyPriorNudge(out, rooms, opts.priors.perSpace);
   return out.map((p, i) => ({ ...p, zIndex: i }));
+}
+
+function nearestRoomType(p: Placement, rooms: Room[]): string | undefined {
+  let best: Room | undefined; let bd = Infinity;
+  for (const r of rooms) {
+    const d = (r.centroid[0] - p.position.x) ** 2 + (r.centroid[1] - p.position.y) ** 2;
+    if (d < bd) { bd = d; best = r; }
+  }
+  return best?.type;
+}
+
+/** Upward-only confidence nudge where engineers commonly place this device in this space
+ *  type (rate > 0.5). Records provenance in meta. Customer rules still decide placement. */
+function applyPriorNudge(
+  placements: Placement[], rooms: Room[], perSpace: Record<string, Record<string, { rate?: number }>>,
+): void {
+  for (const p of placements) {
+    const sp = nearestRoomType(p, rooms);
+    const rate = sp ? perSpace[sp]?.[p.deviceCode]?.rate : undefined;
+    const meta = (p.meta ?? {}) as Record<string, unknown>;
+    meta.priorSpaceType = sp ?? null;
+    meta.priorRate = rate ?? null;
+    meta.learnedFrom = rate != null ? 'engineer_priors' : 'rule_only';
+    p.meta = meta;
+    if (rate != null && rate > 0.5) p.confidence = Math.min(0.97, (p.confidence ?? 0.7) + 0.15 * (rate - 0.5));
+  }
 }

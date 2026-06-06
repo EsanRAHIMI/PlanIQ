@@ -16,3 +16,10 @@ __pycache__/
 services/ai/models/*.pt
 # build
 *.tsbuildinfo
+
+# Phase A training-eval artifacts (rendered cache + generated reports)
+services/ai/eval/_cache/
+services/ai/eval/_out/
+
+# Local BEFORE/AFTER villa PDF pairs (import via Training Center or eval scripts)
+old_plans/

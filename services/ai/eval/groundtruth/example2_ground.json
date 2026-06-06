@@ -1,0 +1,19 @@
+{
+  "plan": "Example 2 — Ground Floor",
+  "source": "example 2 BEFORE.pdf, page 2",
+  "language": "en",
+  "notes": "Large villa ground floor with men's and ladies' majlis. Labels transcribed by hand.",
+  "expectedRoomTypes": {
+    "bathroom": 2,
+    "dressing": 1,
+    "maid_room": 1,
+    "living_room": 1,
+    "corridor": 3,
+    "kitchen": 1,
+    "dining": 2,
+    "laundry": 1,
+    "majlis": 2,
+    "entrance": 1
+  },
+  "labelStrings": ["BATHROOM", "DRESSING", "WC", "MAID'S ROOM", "FAMILY HALL", "LOBBY", "KITCHEN", "DINING ROOM", "BUFFET", "WASH", "MEN MAJLIS", "LADIES MAJLIS", "ENTRANCE"]
+}

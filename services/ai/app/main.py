@@ -25,12 +25,20 @@ _cv = CvProvider()
 def health():
     weights_path = settings.yolo_weights
     weights_loaded = os.path.isfile(weights_path)
+    from .pipeline.ocr import engine_name
     return {
         "status": "ok",
         "fallback": settings.fallback_provider,
         "dwg": settings.enable_dwg,
-        "weights": settings.yolo_weights,
-        "weightsLoaded": weights_loaded,
+        "ocrEngine": engine_name(),
+        # YOLO is an OPTIONAL perception layer: inactive until a model is in production.
+        # When inactive the system runs fully on OCR + geometry + rules + priors.
+        "yolo": {
+            "weights": settings.yolo_weights,
+            "weightsLoaded": weights_loaded,
+            "active": weights_loaded,           # detection runs only if weights exist
+            "role": "perception (detection confidence + candidate generation); never overrides geometry/OCR/rules/QC",
+        },
     }
 
 
@@ -74,7 +82,11 @@ def analyze(req: AnalyzeRequest):
         provider = _cv
     qc = req.qc.model_dump(exclude_none=True) if req.qc else None
     try:
-        result = provider.analyze(bgr, req.floorId, qc)
+        if isinstance(provider, CvProvider):
+            result = provider.analyze(bgr, req.floorId, qc, floor_type=req.floorType,
+                                      priors=req.priors, detector_active=req.detectorActive)
+        else:
+            result = provider.analyze(bgr, req.floorId, qc)
         result.durationMs = int((time.time() - started) * 1000)
         if not result.fallbackChain:
             result.fallbackChain = chain
@@ -98,10 +110,32 @@ def extract_devices(req: AnalyzeRequest):
             "count": len(boxes)}
 
 
+@app.post("/extract-after-text")
+async def extract_after_text(file: UploadFile = File(None), imageUrl: str = Form(None)):
+    """Engineer placement extraction from an AFTER PDF's vector text layer (strongest GT).
+    Accepts a PDF upload or a URL. Returns per-page engineer placements + counts. Empty
+    (hasTextLayer=false) for scanned drawings → caller falls back to the heuristic detector."""
+    from .pipeline.after_text import extract_pdf_bytes
+    if file is not None:
+        data = await file.read()
+    elif imageUrl:
+        r = requests.get(imageUrl, timeout=120); r.raise_for_status(); data = r.content
+    else:
+        raise HTTPException(status_code=400, detail="file or imageUrl required")
+    try:
+        return extract_pdf_bytes(data)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"after-text extraction failed: {e}")
+
+
 @app.post("/suggest", response_model=AnalysisResult)
 def suggest_only(req: SuggestRequest):
     rooms = [r.model_dump() for r in req.rooms]
     zones = [z.model_dump() for z in req.zones]
-    placements = rule_suggest(rooms, zones)
+    # Closed learning loop: priors + floorType nudge confidence and apply floor-type policy.
+    priors = getattr(req, "priors", None)
+    floor_type = getattr(req, "floorType", None)
+    detector_active = bool(getattr(req, "detectorActive", False))
+    placements = rule_suggest(rooms, zones, priors=priors, floor_type=floor_type, detector_active=detector_active)
     return AnalysisResult(image={"width": 0, "height": 0}, rooms=req.rooms, zones=req.zones,
                           placements=placements, confidence=0.7, provider="cv", warnings=[])

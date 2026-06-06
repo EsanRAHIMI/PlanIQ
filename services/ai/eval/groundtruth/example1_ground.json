@@ -1,0 +1,17 @@
+{
+  "plan": "Example 1 — Ground Floor",
+  "source": "Example 1 BEFORE.pdf, page 2",
+  "language": "en",
+  "notes": "Open-plan villa ground floor. Room labels transcribed by hand from the drawing.",
+  "expectedRoomTypes": {
+    "dining": 1,
+    "corridor": 1,
+    "kitchen": 1,
+    "store": 1,
+    "bathroom": 2,
+    "laundry": 1,
+    "majlis": 1,
+    "living_room": 1
+  },
+  "labelStrings": ["DINING", "LOBBY", "KITCHEN", "STORE", "BATH", "W.C", "WASH", "MAJLIS", "HALL"]
+}

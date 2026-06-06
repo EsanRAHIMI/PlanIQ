@@ -1,0 +1,192 @@
+{
+  "source": "Example 1 AFTER.pdf",
+  "floors": [
+    {
+      "page": 1,
+      "floor": "site",
+      "deviceCounts": {
+        "SMART_LOCK": 1,
+        "INTERCOM_BELL": 1,
+        "GATE_MOTOR": 1
+      },
+      "devices": [
+        {
+          "deviceCode": "SMART_LOCK",
+          "x": 0.3585,
+          "y": 0.9075,
+          "via": "text"
+        },
+        {
+          "deviceCode": "INTERCOM_BELL",
+          "x": 0.3405,
+          "y": 0.9497,
+          "via": "text"
+        },
+        {
+          "deviceCode": "GATE_MOTOR",
+          "x": 0.6694,
+          "y": 0.9039,
+          "via": "text"
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "floor": "ground",
+      "deviceCounts": {
+        "ELV_RACK": 1,
+        "INTERCOM_SCREEN": 2,
+        "VOLUME_CONTROL": 2,
+        "SPEAKER": 4,
+        "WIFI_AP": 2
+      },
+      "devices": [
+        {
+          "deviceCode": "ELV_RACK",
+          "x": 0.5392,
+          "y": 0.0762,
+          "via": "text"
+        },
+        {
+          "deviceCode": "INTERCOM_SCREEN",
+          "x": 0.6236,
+          "y": 0.2211,
+          "via": "text"
+        },
+        {
+          "deviceCode": "VOLUME_CONTROL",
+          "x": 0.3624,
+          "y": 0.4425,
+          "via": "text"
+        },
+        {
+          "deviceCode": "VOLUME_CONTROL",
+          "x": 0.549,
+          "y": 0.4425,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SPEAKER",
+          "x": 0.3115,
+          "y": 0.5013,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SPEAKER",
+          "x": 0.5445,
+          "y": 0.5965,
+          "via": "text"
+        },
+        {
+          "deviceCode": "INTERCOM_SCREEN",
+          "x": 0.435,
+          "y": 0.6116,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SPEAKER",
+          "x": 0.3115,
+          "y": 0.6937,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SPEAKER",
+          "x": 0.7397,
+          "y": 0.5965,
+          "via": "text"
+        },
+        {
+          "deviceCode": "WIFI_AP",
+          "x": 0.4917,
+          "y": 0.3189,
+          "via": "icon/text"
+        },
+        {
+          "deviceCode": "WIFI_AP",
+          "x": 0.4995,
+          "y": 0.658,
+          "via": "icon/text"
+        }
+      ]
+    },
+    {
+      "page": 3,
+      "floor": "first",
+      "deviceCounts": {
+        "INTERCOM_SCREEN": 1,
+        "VOLUME_CONTROL": 1,
+        "SENSOR": 4,
+        "SPEAKER": 2,
+        "WIFI_AP": 2
+      },
+      "devices": [
+        {
+          "deviceCode": "INTERCOM_SCREEN",
+          "x": 0.5539,
+          "y": 0.2973,
+          "via": "text"
+        },
+        {
+          "deviceCode": "VOLUME_CONTROL",
+          "x": 0.5534,
+          "y": 0.3159,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SENSOR",
+          "x": 0.6038,
+          "y": 0.3455,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SENSOR",
+          "x": 0.3978,
+          "y": 0.3477,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SPEAKER",
+          "x": 0.4933,
+          "y": 0.3641,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SENSOR",
+          "x": 0.5998,
+          "y": 0.5122,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SENSOR",
+          "x": 0.4013,
+          "y": 0.5156,
+          "via": "text"
+        },
+        {
+          "deviceCode": "SPEAKER",
+          "x": 0.4933,
+          "y": 0.6937,
+          "via": "text"
+        },
+        {
+          "deviceCode": "WIFI_AP",
+          "x": 0.5011,
+          "y": 0.2522,
+          "via": "icon/text"
+        },
+        {
+          "deviceCode": "WIFI_AP",
+          "x": 0.5011,
+          "y": 0.5627,
+          "via": "icon/text"
+        }
+      ]
+    },
+    {
+      "page": 4,
+      "floor": "roof",
+      "deviceCounts": {},
+      "devices": []
+    }
+  ]
+}

@@ -188,3 +188,71 @@ export function hybridScore(
   const norm = w.rule + w.prior + w.detector + w.qc; // feedback only subtracts
   return +(Math.min(1, Math.max(0, raw / (norm || 1)))).toFixed(3);
 }
+
+// ── Multi-floor helpers ──────────────────────────────────────────────────────────
+export const FLOOR_TYPES = ['site', 'ground', 'first', 'second', 'third', 'basement', 'mezzanine', 'roof', 'unknown'] as const;
+export type FloorType = (typeof FLOOR_TYPES)[number];
+
+const FLOOR_KEYWORDS: [RegExp, FloorType][] = [
+  [/basement/i, 'basement'], [/mezzanine/i, 'mezzanine'],
+  [/\bsite\b|location/i, 'site'], [/ground/i, 'ground'],
+  [/first/i, 'first'], [/second/i, 'second'], [/third/i, 'third'], [/roof/i, 'roof'],
+];
+
+/** Infer floor type from an AFTER page's title text; fall back to villa page order. */
+export function inferFloorType(titleText: string, pageIndex: number, pageCount: number):
+  { floorType: FloorType; source: 'title-text' | 'page-order' | 'single-page' } {
+  for (const [re, ft] of FLOOR_KEYWORDS) if (re.test(titleText)) return { floorType: ft, source: 'title-text' };
+  if (pageCount === 1) return { floorType: 'ground', source: 'single-page' };
+  const order: FloorType[] = ['site', 'ground', 'first', 'second', 'roof'];
+  return { floorType: order[pageIndex - 1] ?? 'unknown', source: 'page-order' };
+}
+
+/** Device classes engineers draw on the ELV/smart-home AFTER sheets — metrics are scoped
+ *  to these (CCTV/electrical/AV are separate opt-in disciplines, reported apart). */
+export const ENGINEER_DEVICE_CLASSES = [
+  'WIFI_AP', 'SPEAKER', 'VOLUME_CONTROL', 'SENSOR', 'INTERCOM_SCREEN',
+  'INTERCOM_BELL', 'THERMOSTAT', 'GATE_MOTOR', 'SMART_LOCK', 'ELV_RACK',
+] as const;
+
+export interface DeviceMetrics {
+  perClass: Record<string, { truth: number; pred: number; tp: number; fp: number; fn: number; P: number | null; R: number | null; F1: number | null }>;
+  micro: { tp: number; fp: number; fn: number; P: number | null; R: number | null; F1: number | null };
+}
+
+/** Count-based per-device-class precision/recall/F1 (Before/After rasters differ, so counts
+ *  are the honest metric). `classes` defaults to the engineer device classes. */
+export function deviceCountMetrics(
+  truth: Record<string, number>, pred: Record<string, number>, classes: readonly string[] = ENGINEER_DEVICE_CLASSES,
+): DeviceMetrics {
+  const perClass: DeviceMetrics['perClass'] = {};
+  let tp = 0, fp = 0, fn = 0;
+  for (const c of classes) {
+    const t = truth[c] ?? 0, p = pred[c] ?? 0;
+    const ctp = Math.min(t, p), cfp = Math.max(0, p - t), cfn = Math.max(0, t - p);
+    tp += ctp; fp += cfp; fn += cfn;
+    const P = ctp + cfp ? ctp / (ctp + cfp) : null;
+    const R = ctp + cfn ? ctp / (ctp + cfn) : null;
+    perClass[c] = { truth: t, pred: p, tp: ctp, fp: cfp, fn: cfn, P, R, F1: P && R ? (2 * P * R) / (P + R) : null };
+  }
+  const P = tp + fp ? tp / (tp + fp) : null;
+  const R = tp + fn ? tp / (tp + fn) : null;
+  return { perClass, micro: { tp, fp, fn, P, R, F1: P && R ? (2 * P * R) / (P + R) : null } };
+}
+
+// ── YOLO perception layer status (first-class, optional) ─────────────────────────
+export type YoloState = 'not_available' | 'training' | 'evaluated' | 'approved' | 'production';
+
+/** Map the ModelVersion lifecycle to a clear perception-layer state for Admin + the engine.
+ *  The detector is ACTIVE (influences detection confidence / candidate generation) only when
+ *  a model is in production — otherwise the system runs on OCR + geometry + rules + priors. */
+export function yoloStatus(models: { status: ModelStatus }[]): { state: YoloState; active: boolean; detectorWeight: number } {
+  const has = (s: ModelStatus) => models.some((m) => m.status === s);
+  let state: YoloState = 'not_available';
+  if (has('production')) state = 'production';
+  else if (has('approved')) state = 'approved';
+  else if (has('evaluated') || has('trained')) state = 'evaluated';
+  else if (has('training')) state = 'training';
+  const active = state === 'production';
+  return { state, active, detectorWeight: active ? 0.2 : 0 };  // weight 0 until production
+}

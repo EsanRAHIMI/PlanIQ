@@ -60,6 +60,8 @@ export const ProjectSchema = new Schema({
     updatedAt: Date,
   },
   stats: { floors: { type: Number, default: 0 }, devices: { type: Number, default: 0 }, lastExportAt: Date },
+  // Auto-feed approved designs into the learning loop (opt-out per project).
+  feedForTraining: { type: Boolean, default: true },
 }, opts);
 ProjectSchema.index({ tenantId: 1, status: 1 });
 ProjectSchema.index({ name: 'text', code: 'text' });
@@ -255,14 +257,40 @@ const TrainingAnnotationSchema = new Schema({
   deviceCode: { type: String, required: true },
   bboxNorm: { type: [Number], required: true },   // [x,y,w,h] normalized (top-left)
   spaceTypeHint: String,
-  source: { type: String, enum: ['heuristic', 'human'], default: 'human' },
+  // engineer_vector = extracted from the AFTER PDF vector text layer (strongest GT)
+  source: { type: String, enum: ['heuristic', 'human', 'engineer_vector'], default: 'human' },
   status: { type: String, enum: ['pending', 'confirmed', 'false_positive'], default: 'confirmed' },
+  rawText: String,                                 // source label/icon text (provenance)
   reviewedBy: oid, reviewedAt: Date,
 }, { _id: true });
+
+// A Training PROJECT groups the floors of one villa Before/After pair (multi-floor).
+export const TrainingProjectSchema = new Schema({
+  tenantId: { type: oid, required: true, index: true },
+  name: { type: String, required: true },               // e.g. "Example 6"
+  source: { type: String, enum: ['import', 'live'], default: 'import' },
+  beforeFile: String, afterFile: String,
+  pageCount: { type: Number, default: 0 },
+  pageCountMatch: { type: Boolean, default: true },
+  floorTypes: { type: [String], default: [] },          // per page, parallel to samples
+  status: { type: String, enum: ['imported', 'analyzed', 'evaluated', 'reviewed'], default: 'imported' },
+  metrics: { type: Schema.Types.Mixed, default: {} },    // project-level P/R/F1
+  liveProjectId: oid,                                    // set when source==='live'
+  feedForTraining: { type: Boolean, default: true },     // auto-feed opt-out
+  createdBy: oid,
+}, opts);
+TrainingProjectSchema.index({ tenantId: 1, status: 1 });
 
 export const TrainingSampleSchema = new Schema({
   tenantId: { type: oid, required: true, index: true },
   name: { type: String, required: true },
+  // ── Multi-floor: a sample is ONE floor/page of a TrainingProject ──
+  projectId: { type: oid, index: true },
+  pageIndex: { type: Number, default: 1 },
+  pageCount: { type: Number, default: 1 },
+  floorType: { type: String, default: 'unknown' },      // site/ground/first/second/roof/basement/unknown
+  floorTypeSource: String,                              // title-text | page-order | manual
+  matchConfidence: { type: Number, default: 1 },        // Before↔After page match
   projectType: String, floorKind: String, drawingType: String, engineer: String,
   date: String, notes: String,
   before: { s3Key: String, width: Number, height: Number, mime: String },
@@ -271,13 +299,16 @@ export const TrainingSampleSchema = new Schema({
     scale: Number, dx: Number, dy: Number, rotation: Number,
     sameScale: Boolean, sameOrientation: Boolean,
   },
-  annotations: { type: [TrainingAnnotationSchema], default: [] },
+  annotations: { type: [TrainingAnnotationSchema], default: [] },  // engineer GT
+  prediction: { type: Schema.Types.Mixed, default: null },         // AI placements + understanding from BEFORE
+  evalMetrics: { type: Schema.Types.Mixed, default: null },         // per-floor P/R/F1 vs engineer GT
   status: { type: String, enum: ['draft', 'uploaded', 'annotated', 'reviewed', 'in_dataset'], default: 'draft' },
   split: { type: String, enum: ['train', 'val'], default: 'train' },
   counts: { devices: { type: Number, default: 0 } },
   createdBy: oid,
 }, opts);
 TrainingSampleSchema.index({ tenantId: 1, status: 1 });
+TrainingSampleSchema.index({ tenantId: 1, projectId: 1, pageIndex: 1 });
 
 export const TrainingDatasetSchema = new Schema({
   tenantId: { type: oid, required: true, index: true },
@@ -328,13 +359,14 @@ PlacementFeedbackSchema.index({ tenantId: 1, deviceCode: 1, action: 1 });
 [TenantSchema, UserSchema, ProjectSchema, FloorSchema, PlanAssetSchema, DetectedRoomSchema,
  DetectedZoneSchema, PlacementSchema, LayerSchema, DeviceLibrarySchema, VersionSchema,
  ExportSchema, SettingSchema,
- TrainingSampleSchema, TrainingDatasetSchema, ModelVersionSchema, PlacementPriorsSchema].forEach(softDelete);
+ TrainingProjectSchema, TrainingSampleSchema, TrainingDatasetSchema, ModelVersionSchema, PlacementPriorsSchema].forEach(softDelete);
 
 export const MODELS = {
   Tenant: 'Tenant', User: 'User', RefreshSession: 'RefreshSession', Project: 'Project',
   Floor: 'Floor', PlanAsset: 'PlanAsset', DetectedRoom: 'DetectedRoom', DetectedZone: 'DetectedZone',
   Placement: 'Placement', Layer: 'Layer', DeviceLibrary: 'DeviceLibrary', Version: 'Version',
   Export: 'Export', AuditLog: 'AuditLog', Setting: 'Setting', AnalysisRun: 'AnalysisRun',
+  TrainingProject: 'TrainingProject',
   TrainingSample: 'TrainingSample', TrainingDataset: 'TrainingDataset',
   ModelVersion: 'ModelVersion', PlacementPriors: 'PlacementPriors', PlacementFeedback: 'PlacementFeedback',
 } as const;
@@ -356,6 +388,7 @@ export const MONGOOSE_MODELS = [
   { name: MODELS.AuditLog, schema: AuditLogSchema },
   { name: MODELS.Setting, schema: SettingSchema },
   { name: MODELS.AnalysisRun, schema: AnalysisRunSchema },
+  { name: MODELS.TrainingProject, schema: TrainingProjectSchema },
   { name: MODELS.TrainingSample, schema: TrainingSampleSchema },
   { name: MODELS.TrainingDataset, schema: TrainingDatasetSchema },
   { name: MODELS.ModelVersion, schema: ModelVersionSchema },

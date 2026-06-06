@@ -10,9 +10,10 @@ import {
   createSampleSchema, updateSampleSchema, saveAnnotationsSchema, annotationSchema,
   uploadRoleSchema, exportDatasetSchema, feedbackSchema, modelStatusSchema,
   yoloLabelLine, dataYaml, learnPriors, canTransition, DEVICE_CLASSES,
+  inferFloorType, deviceCountMetrics, yoloStatus, ENGINEER_DEVICE_CLASSES,
   type ModelStatus,
 } from '@planiq/shared';
-import { MODELS, TrainingSampleSchema, TrainingDatasetSchema, ModelVersionSchema, PlacementPriorsSchema, PlacementFeedbackSchema } from '../../db/schemas';
+import { MODELS, TrainingProjectSchema, TrainingSampleSchema, TrainingDatasetSchema, ModelVersionSchema, PlacementPriorsSchema, PlacementFeedbackSchema } from '../../db/schemas';
 import { StorageService } from '../storage/storage.service';
 import { ZodValidationPipe } from '../../common/zod.pipe';
 import { CurrentUser, AuthUser, Roles } from '../../common/decorators';
@@ -22,6 +23,7 @@ const ALLOWED_MIME: Record<string, string> = { 'application/pdf': 'pdf', 'image/
 @Injectable()
 export class TrainingService {
   constructor(
+    @InjectModel(MODELS.TrainingProject) private projects: Model<any>,
     @InjectModel(MODELS.TrainingSample) private samples: Model<any>,
     @InjectModel(MODELS.TrainingDataset) private datasets: Model<any>,
     @InjectModel(MODELS.ModelVersion) private models: Model<any>,
@@ -33,6 +35,24 @@ export class TrainingService {
 
   private trainingKey(tenantId: string, kind: string, ext: string): string {
     return this.storage.key(tenantId, 'training', kind, ext);
+  }
+
+  private aiUrl(): string {
+    return (this.config.get('ai') as any)?.url ?? 'http://localhost:8000';
+  }
+
+  // ── YOLO perception-layer status (first-class, optional) ────────────────────
+  async yoloStatus(user: AuthUser) {
+    const models = await this.models.find({ tenantId: user.tenantId }).select('status version').lean();
+    let aiHealth: any = null;
+    try { aiHealth = await (await fetch(`${this.aiUrl()}/health`)).json(); } catch { /* AI service optional */ }
+    return {
+      ...yoloStatus(models as unknown as { status: ModelStatus }[]),
+      weightsLoaded: !!aiHealth?.yolo?.weightsLoaded,
+      ocrEngine: aiHealth?.ocrEngine ?? null,
+      note: 'YOLO is optional. Inactive → system runs on OCR + geometry + rules + priors. '
+          + 'Active (a model in production) → improves detection confidence & candidate generation only.',
+    };
   }
 
   // ── Samples ───────────────────────────────────────────────────────────────
@@ -183,13 +203,167 @@ export class TrainingService {
     return this.datasets.find({ tenantId: user.tenantId }).sort({ version: -1 }).lean();
   }
 
-  // ── Learned priors ───────────────────────────────────────────────────────--
+  // ── Multi-floor training projects (old_plans importer; repeatable, no hard-coded names) ──
+  private async aiMultipart(path: string, buf: Buffer, filename: string, field = 'file'): Promise<any> {
+    const fd = new FormData();
+    fd.append(field, new Blob([new Uint8Array(buf)], { type: 'application/pdf' }), filename);
+    const r = await fetch(`${this.aiUrl()}${path}`, { method: 'POST', body: fd as any });
+    if (!r.ok) throw new BadRequestException(`AI ${path} failed (${r.status})`);
+    return r.json();
+  }
+
+  private async uploadPageImage(tenantId: string, page: any, role: string, n: number, i: number): Promise<string> {
+    const key = this.storage.key(tenantId, 'training', `ex${n}-p${i}-${role}`, 'png');
+    await this.storage.putBuffer(key, Buffer.from(page.b64, 'base64'), 'image/png');
+    return key;
+  }
+
+  /** Scan a folder of BEFORE/AFTER villa PDFs → TrainingProject + per-floor TrainingSample.
+   *  Idempotent (skips already-imported projects). Floor type from AFTER title; engineer
+   *  placements from the AFTER vector text layer. */
+  async importProjects(user: AuthUser, dto: { folder?: string }) {
+    const fs = await import('fs'); const path = await import('path');
+    const folder = dto?.folder || (this.config.get('training') as any)?.oldPlansDir || 'old_plans';
+    if (!fs.existsSync(folder)) throw new BadRequestException(`folder not found: ${folder}`);
+    const files = fs.readdirSync(folder).filter((f) => /\.pdf$/i.test(f));
+    const pairs = new Map<number, { before?: string; after?: string }>();
+    for (const f of files) {
+      const m = f.match(/example\s*(\d+)/i); if (!m) continue;
+      const role = /after/i.test(f) ? 'after' : /before/i.test(f) ? 'before' : null;
+      if (!role) continue;
+      const e = pairs.get(Number(m[1])) ?? {}; (e as any)[role] = f; pairs.set(Number(m[1]), e);
+    }
+    const out: any[] = [];
+    for (const [n, p] of [...pairs.entries()].sort((a, b) => a[0] - b[0])) {
+      if (!p.before || !p.after) { out.push({ name: `Example ${n}`, skipped: 'missing before/after' }); continue; }
+      const name = `Example ${n}`;
+      if (await this.projects.findOne({ tenantId: user.tenantId, name, deletedAt: null })) { out.push({ name, skipped: 'exists' }); continue; }
+      const beforeBuf = fs.readFileSync(path.join(folder, p.before));
+      const afterBuf = fs.readFileSync(path.join(folder, p.after));
+      const beforePages = (await this.aiMultipart('/ingest', beforeBuf, p.before)).pages ?? [];
+      const afterPages = (await this.aiMultipart('/ingest', afterBuf, p.after)).pages ?? [];
+      const engineer = await this.aiMultipart('/extract-after-text', afterBuf, p.after); // {floors:[...]}
+      const pageCount = Math.min(beforePages.length, afterPages.length) || Math.max(beforePages.length, afterPages.length);
+      const proj = await this.projects.create({
+        tenantId: user.tenantId, name, source: 'import', beforeFile: p.before, afterFile: p.after,
+        pageCount, pageCountMatch: beforePages.length === afterPages.length, status: 'imported', createdBy: user.id,
+      });
+      const floorTypes: string[] = [];
+      let engineerDevices = 0;
+      for (let i = 1; i <= pageCount; i++) {
+        const bp = beforePages[i - 1]; const ap = afterPages[i - 1];
+        const fl = engineer.floors?.[i - 1] ?? { devices: [], deviceCounts: {} };
+        const titleText = (fl.devices ?? []).map((d: any) => d.rawText).join(' ');
+        const { floorType, source } = inferFloorType(titleText, i, pageCount);
+        floorTypes.push(floorType);
+        const annotations = (fl.devices ?? [])
+          .filter((d: any) => DEVICE_CLASSES.includes(d.deviceCode))
+          .map((d: any) => ({ deviceCode: d.deviceCode, bboxNorm: [Math.max(0, d.x - 0.01), Math.max(0, d.y - 0.01), 0.02, 0.02],
+            source: 'engineer_vector', status: 'confirmed', rawText: d.rawText }));
+        engineerDevices += annotations.length;
+        await this.samples.create({
+          tenantId: user.tenantId, name: `${name} — ${floorType}`, projectId: proj._id, pageIndex: i, pageCount,
+          floorType, floorTypeSource: source, matchConfidence: beforePages.length === afterPages.length ? 1 : 0.5,
+          before: bp ? { s3Key: await this.uploadPageImage(user.tenantId, bp, 'before', n, i), width: bp.width, height: bp.height } : undefined,
+          after: ap ? { s3Key: await this.uploadPageImage(user.tenantId, ap, 'after', n, i), width: ap.width, height: ap.height } : undefined,
+          annotations, counts: { devices: annotations.length },
+          status: annotations.length ? 'reviewed' : 'uploaded', createdBy: user.id,
+        });
+      }
+      proj.floorTypes = floorTypes; await proj.save();
+      out.push({ name, pages: pageCount, floorTypes, engineerDevices });
+    }
+    return { imported: out.filter((o) => !o.skipped).length, total: out.length, projects: out };
+  }
+
+  async listProjects(user: AuthUser) {
+    return this.projects.find({ tenantId: user.tenantId, deletedAt: null }).sort({ name: 1 }).lean();
+  }
+
+  async getProject(user: AuthUser, id: string) {
+    const proj = await this.projects.findOne({ _id: id, tenantId: user.tenantId }).lean() as any;
+    if (!proj) throw new NotFoundException('Training project not found');
+    const floors = await this.samples.find({ tenantId: user.tenantId, projectId: id })
+      .select('name pageIndex floorType floorTypeSource matchConfidence counts prediction evalMetrics annotations status')
+      .sort({ pageIndex: 1 }).lean();
+    return { ...proj, floors };
+  }
+
+  async setFloorType(user: AuthUser, sampleId: string, floorType: string) {
+    const s = await this.samples.findOneAndUpdate(
+      { _id: sampleId, tenantId: user.tenantId }, { floorType, floorTypeSource: 'manual' }, { new: true }).lean();
+    if (!s) throw new NotFoundException('Floor not found');
+    return { ok: true, floorType };
+  }
+
+  /** Run the AI pipeline on every BEFORE floor of a project (priors + floorType applied). */
+  async runProjectAI(user: AuthUser, id: string) {
+    const floors = await this.samples.find({ tenantId: user.tenantId, projectId: id }).sort({ pageIndex: 1 });
+    if (!floors.length) throw new NotFoundException('No floors for project');
+    const priorsDoc = await this.priors.findOne({ tenantId: user.tenantId }).sort({ version: -1 }).lean() as any;
+    const yolo = await this.yoloStatus(user);
+    let n = 0;
+    for (const f of floors) {
+      if (!f.before?.s3Key) continue;
+      const imageUrl = await this.storage.presignGet(f.before.s3Key, 1800);
+      const r = await fetch(`${this.aiUrl()}/analyze`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ imageUrl, floorType: f.floorType, priors: priorsDoc ?? undefined, detectorActive: yolo.active }),
+      });
+      if (!r.ok) continue;
+      const res: any = await r.json();
+      const counts: Record<string, number> = {};
+      for (const pl of res.placements ?? []) counts[pl.deviceCode] = (counts[pl.deviceCode] ?? 0) + 1;
+      f.prediction = { deviceCounts: counts, placements: (res.placements ?? []).map((p: any) => ({ deviceCode: p.deviceCode, position: p.position })),
+        acceptedRooms: (res.rooms ?? []).length, qcSummary: res.qcSummary };
+      await f.save(); n++;
+    }
+    await this.projects.updateOne({ _id: id, tenantId: user.tenantId }, { status: 'analyzed' });
+    return { floorsAnalyzed: n };
+  }
+
+  /** Compare AI prediction vs engineer GT per floor and aggregate to project metrics. */
+  async evaluateProject(user: AuthUser, id: string) {
+    const floors = await this.samples.find({ tenantId: user.tenantId, projectId: id }).sort({ pageIndex: 1 });
+    const projTruth: Record<string, number> = {}; const projPred: Record<string, number> = {};
+    const perFloor: any[] = [];
+    for (const f of floors) {
+      const truth: Record<string, number> = {};
+      for (const a of f.annotations ?? []) if (a.status !== 'false_positive') truth[a.deviceCode] = (truth[a.deviceCode] ?? 0) + 1;
+      const pred: Record<string, number> = (f.prediction?.deviceCounts ?? {});
+      const m = deviceCountMetrics(truth, pred);
+      f.evalMetrics = m.micro; await f.save();
+      for (const [c, v] of Object.entries(truth)) projTruth[c] = (projTruth[c] ?? 0) + (v as number);
+      for (const [c, v] of Object.entries(pred)) if ((ENGINEER_DEVICE_CLASSES as readonly string[]).includes(c)) projPred[c] = (projPred[c] ?? 0) + (v as number);
+      perFloor.push({ pageIndex: f.pageIndex, floorType: f.floorType, ...m.micro });
+    }
+    const projectMetrics = deviceCountMetrics(projTruth, projPred);
+    await this.projects.updateOne({ _id: id, tenantId: user.tenantId }, { status: 'evaluated', metrics: projectMetrics.micro });
+    return { project: projectMetrics, perFloor };
+  }
+
+  // ── Learned priors (now floor-aware: per room-type AND per floor-type) ──────--
   async recomputePriors(user: AuthUser) {
-    const samples = await this.samples.find({ tenantId: user.tenantId }).select('annotations').lean();
+    const samples = await this.samples.find({ tenantId: user.tenantId })
+      .select('annotations floorType').lean();
+    // perSpace priors from annotations (spaceTypeHint where available).
     const priors = learnPriors(samples.map((s: any) => ({ annotations: s.annotations ?? [] })));
+    // perFloorType priors: device counts per floor type (drives roof-exclusion / site-access).
+    const perFloorType: Record<string, Record<string, number>> = {};
+    for (const s of samples as any[]) {
+      const ft = s.floorType ?? 'unknown';
+      for (const a of s.annotations ?? []) {
+        if (a.status === 'false_positive') continue;
+        (perFloorType[ft] ??= {})[a.deviceCode] = (perFloorType[ft]?.[a.deviceCode] ?? 0) + 1;
+      }
+    }
     const version = ((await this.priors.findOne({ tenantId: user.tenantId }).sort({ version: -1 }).lean() as any)?.version ?? 0) + 1;
-    const doc = await this.priors.create({ tenantId: user.tenantId, version, sampleN: priors.sampleN, perSpace: priors.perSpace, createdBy: user.id });
-    return { version, sampleN: priors.sampleN, spaceTypes: Object.keys(priors.perSpace).length, priors: doc.perSpace };
+    const doc = await this.priors.create({
+      tenantId: user.tenantId, version, sampleN: priors.sampleN,
+      perSpace: { ...priors.perSpace, _perFloorType: perFloorType } as any, createdBy: user.id,
+    });
+    return { version, sampleN: priors.sampleN, spaceTypes: Object.keys(priors.perSpace).length,
+      floorTypes: Object.keys(perFloorType), priors: doc.perSpace };
   }
 
   async getPriors(user: AuthUser) {
@@ -295,6 +469,16 @@ export class TrainingController {
   exportDs(@CurrentUser() u: AuthUser, @Body() b: any) { return this.svc.exportDataset(u, b); }
   @Get('datasets') datasets(@CurrentUser() u: AuthUser) { return this.svc.listDatasets(u); }
 
+  // ── Multi-floor training projects ──
+  @Post('projects/import') importProjects(@CurrentUser() u: AuthUser, @Body() b: any) { return this.svc.importProjects(u, b ?? {}); }
+  @Get('projects') projects(@CurrentUser() u: AuthUser) { return this.svc.listProjects(u); }
+  @Get('projects/:id') project(@CurrentUser() u: AuthUser, @Param('id') id: string) { return this.svc.getProject(u, id); }
+  @Post('projects/:id/run-ai') runAi(@CurrentUser() u: AuthUser, @Param('id') id: string) { return this.svc.runProjectAI(u, id); }
+  @Post('projects/:id/evaluate') evaluate(@CurrentUser() u: AuthUser, @Param('id') id: string) { return this.svc.evaluateProject(u, id); }
+  @Patch('projects/:id/floors/:sid') setFloorType(@CurrentUser() u: AuthUser, @Param('id') id: string, @Param('sid') sid: string, @Body() b: any) { return this.svc.setFloorType(u, sid, b?.floorType); }
+
+  @Get('yolo/status') yolo(@CurrentUser() u: AuthUser) { return this.svc.yoloStatus(u); }
+
   @Post('priors/recompute') recompute(@CurrentUser() u: AuthUser) { return this.svc.recomputePriors(u); }
   @Get('priors') priors(@CurrentUser() u: AuthUser) { return this.svc.getPriors(u); }
 
@@ -311,6 +495,7 @@ export class TrainingController {
 
 @Module({
   imports: [MongooseModule.forFeature([
+    { name: MODELS.TrainingProject, schema: TrainingProjectSchema },
     { name: MODELS.TrainingSample, schema: TrainingSampleSchema },
     { name: MODELS.TrainingDataset, schema: TrainingDatasetSchema },
     { name: MODELS.ModelVersion, schema: ModelVersionSchema },

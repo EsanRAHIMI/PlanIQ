@@ -99,31 +99,65 @@ def detect_columns(binary: np.ndarray) -> List[Dict]:
 
 # ── Doors & entrances ──────────────────────────────────────────────────────────
 def detect_doors(binary: np.ndarray) -> List[Dict]:
-    """Doors are openings in the wall: where bridging the wall gap adds material that
-    wasn't a wall. The added components of ~door width are door candidates."""
+    """Doors are openings in a wall line: a gap of ~door width that is FLANKED by wall on
+    its two opposite ends (the door jambs) and open on the other two sides.
+
+    The previous version accepted every gap that bridging filled, which produced 100+ false
+    'doors' on a typical sheet (hatching, dimension channels, furniture gaps) and poisoned
+    the scale estimate. We now (1) require collinear flanking walls and (2) cluster nearby
+    candidates so each real opening counts once.
+    """
     h, w = binary.shape
     walls = wall_mask_hv(binary)
     bridged = bridge_doors(walls, w)
     opening = cv2.subtract(bridged, walls)
     opening = cv2.morphologyEx(opening, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     n, lab, stats, cent = cv2.connectedComponentsWithStats(opening, 8)
-    lo, hi = max(10, w // 70), max(40, w // 16)   # ≈0.35–1.3 m worth of pixels
-    # building perimeter (outermost wall bbox) — doors on it are entrances
+    lo, hi = max(12, w // 60), max(40, w // 18)   # ≈0.6–1.2 m worth of pixels
+
     ys, xs = np.where(walls > 0)
     if len(xs) == 0:
         return []
     bx0, by0, bx1, by1 = xs.min(), ys.min(), xs.max(), ys.max()
-    margin = 0.06 * max(bx1 - bx0, by1 - by0)
-    doors = []
+    margin = 0.05 * max(bx1 - bx0, by1 - by0)
+    wallmask = walls > 0
+    probe = max(3, w // 280)        # how far past each jamb to look for flanking wall
+
+    cands = []
     for i in range(1, n):
         x, y, bw, bh, area = stats[i]
         span = max(bw, bh)
         if not (lo <= span <= hi):
             continue
+        # the gap must be roughly 1-D (an opening in a line), not a blob
+        if min(bw, bh) > 0 and max(bw, bh) / float(min(bw, bh)) < 1.6:
+            continue
         cx, cy = cent[i]
+        horizontal = bw >= bh        # gap runs left-right → jambs on left/right
+        if horizontal:
+            a = (int(x - probe), int(cy)); b = (int(x + bw + probe), int(cy))
+        else:
+            a = (int(cx), int(y - probe)); b = (int(cx), int(y + bh + probe))
+        def wall_at(p):
+            px, py = p
+            if not (0 <= px < w and 0 <= py < h):
+                return False
+            yy0, yy1 = max(0, py - probe), min(h, py + probe + 1)
+            xx0, xx1 = max(0, px - probe), min(w, px + probe + 1)
+            return bool(wallmask[yy0:yy1, xx0:xx1].any())
+        if not (wall_at(a) and wall_at(b)):   # must have both jambs
+            continue
         perimeter = (cx - bx0 < margin or bx1 - cx < margin or cy - by0 < margin or by1 - cy < margin)
-        doors.append({"cx": cx / w, "cy": cy / h, "width_px": int(span), "perimeter": bool(perimeter)})
-    return doors
+        cands.append({"cx": cx / w, "cy": cy / h, "width_px": int(span), "perimeter": bool(perimeter)})
+
+    # Cluster near-duplicate candidates (same opening split into pieces).
+    cands.sort(key=lambda d: (round(d["cy"], 2), round(d["cx"], 2)))
+    merged: List[Dict] = []
+    for d in cands:
+        if any((d["cx"] - m["cx"]) ** 2 + (d["cy"] - m["cy"]) ** 2 < (0.02) ** 2 for m in merged):
+            continue
+        merged.append(d)
+    return merged
 
 
 # ── Stairs ───────────────────────────────────────────────────────────────────--

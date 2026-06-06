@@ -1,5 +1,7 @@
 # Slim CPU image for local Docker (no GPU/CUDA wheels).
-# OCR and YOLO gracefully no-op when Paddle/weights are absent — see pipeline/*.py
+# RapidOCR (ONNX, CPU, ~CPU-only) provides real OCR without the heavy Paddle stack — OCR
+# is the linchpin of room typing, so the slim image must ship a working engine. YOLO still
+# gracefully no-ops without weights — see pipeline/*.py.
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
 pydantic==2.8.2
@@ -9,5 +11,6 @@ opencv-python-headless==4.10.0.84
 Pillow==10.4.0
 PyMuPDF==1.24.9
 shapely==2.0.5
+rapidocr-onnxruntime==1.3.24
 requests==2.32.3
 ezdxf==1.3.1

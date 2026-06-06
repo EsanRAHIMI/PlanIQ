@@ -35,9 +35,11 @@ describe('rule engine', () => {
     expect(rack!.rationale).toContain('service');
   });
 
-  it('adds a thermostat to bedrooms', () => {
-    const p = suggestPlacements([room('master_bedroom', 0.3, 0.3)], []);
+  it('adds a thermostat to main living zones (not every bedroom)', () => {
+    const p = suggestPlacements([room('majlis', 0.3, 0.3)], []);
     expect(p.some((x) => x.deviceCode === 'THERMOSTAT')).toBe(true);
+    const bedroomOnly = suggestPlacements([room('master_bedroom', 0.3, 0.3)], []);
+    expect(bedroomOnly.some((x) => x.deviceCode === 'THERMOSTAT')).toBe(false);
   });
 
   it('every placement is editable AI suggestion (source ai, unreviewed)', () => {

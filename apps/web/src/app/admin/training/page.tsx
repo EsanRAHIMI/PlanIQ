@@ -29,6 +29,10 @@ export default function TrainingPage() {
   const [models, setModels] = useState<any[]>([]);
   const [feedback, setFeedback] = useState<any>(null);
   const [priors, setPriors] = useState<any>(null);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [yolo, setYolo] = useState<any>(null);
+  const [openProj, setOpenProj] = useState<any>(null);
+  const [busy, setBusy] = useState<string>('');
   const imgRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -42,6 +46,8 @@ export default function TrainingPage() {
     setModels(await api.get<any[]>('/training/models').catch(() => []));
     setFeedback(await api.get<any>('/training/feedback/stats').catch(() => null));
     setPriors(await api.get<any>('/training/priors').catch(() => null));
+    setProjects(await api.get<any[]>('/training/projects').catch(() => []));
+    setYolo(await api.get<any>('/training/yolo/status').catch(() => null));
   }, []);
   useEffect(() => { if (me) void refresh(); }, [me, refresh]);
 
@@ -111,6 +117,26 @@ export default function TrainingPage() {
   async function promote(id: string, status: string) {
     await api.patch(`/training/models/${id}/status`, { status }).then(refresh).catch((e) => toast.error(formatApiError(e, 'Promote')));
   }
+  // ── Multi-floor training projects ──
+  async function importProjects() {
+    setBusy('import');
+    try {
+      const r = await api.post<any>('/training/projects/import', {});
+      toast.success(`Imported ${r.imported} project(s) (${r.total} scanned)`);
+      await refresh();
+    } catch (e) { toast.error(formatApiError(e, 'Import')); } finally { setBusy(''); }
+  }
+  async function openProject(id: string) { setOpenProj(await api.get<any>(`/training/projects/${id}`).catch(() => null)); }
+  async function runProjectAI(id: string) {
+    setBusy('run'); try { const r = await api.post<any>(`/training/projects/${id}/run-ai`, {}); toast.success(`Analyzed ${r.floorsAnalyzed} floor(s)`); await openProject(id); } catch (e) { toast.error(formatApiError(e, 'Run AI')); } finally { setBusy(''); }
+  }
+  async function evaluateProject(id: string) {
+    setBusy('eval'); try { const r = await api.post<any>(`/training/projects/${id}/evaluate`, {}); const m = r.project?.micro ?? {}; toast.success(`F1 ${m.F1?.toFixed?.(2) ?? '—'} (P ${m.P?.toFixed?.(2) ?? '—'} R ${m.R?.toFixed?.(2) ?? '—'})`); await openProject(id); await refresh(); } catch (e) { toast.error(formatApiError(e, 'Evaluate')); } finally { setBusy(''); }
+  }
+  async function setFloorType(sid: string, projId: string, floorType: string) {
+    await api.patch(`/training/projects/${projId}/floors/${sid}`, { floorType }).catch((e) => toast.error(formatApiError(e, 'Floor type')));
+    await openProject(projId);
+  }
 
   if (denied) return <main className="mx-auto max-w-2xl px-6 py-24 text-center"><h1 className="text-xl font-semibold">Admin access required</h1><Link href="/dashboard" className="btn-primary mt-6 inline-block">Back</Link></main>;
   if (!me) return <main className="p-10 text-slate-500">Loading…</main>;
@@ -126,6 +152,75 @@ export default function TrainingPage() {
           </div>
           <button onClick={createSample} className="btn-primary">+ New sample</button>
         </div>
+
+        {/* ── Multi-floor training projects + YOLO perception status ── */}
+        <section className="mt-6 rounded-xl border border-slate-200 bg-white p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-800">Training projects (multi-floor)</h2>
+              <p className="text-[11px] text-slate-500">Import BEFORE/AFTER villa pairs from <code>old_plans</code>. Each PDF page becomes a Training Floor; engineer placements come from the AFTER vector text.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {yolo && (
+                <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${yolo.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}
+                  title={yolo.note}>
+                  YOLO: {yolo.active ? 'active' : 'inactive'} ({yolo.state})
+                </span>
+              )}
+              <button onClick={importProjects} disabled={busy === 'import'} className="btn-primary text-xs">
+                {busy === 'import' ? 'Importing…' : 'Import old_plans'}
+              </button>
+              <button onClick={recomputePriors} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-50">Recompute priors</button>
+            </div>
+          </div>
+          {!yolo?.active && (
+            <p className="mt-2 text-[11px] text-slate-400">YOLO is an optional perception layer (detector weight 0 until a model is in production). The system runs on OCR + geometry + rules + priors meanwhile.</p>
+          )}
+
+          <div className="mt-3 grid grid-cols-12 gap-4">
+            <div className="col-span-4 space-y-1">
+              {projects.length === 0 && <p className="text-xs text-slate-400">No projects yet — click “Import old_plans”.</p>}
+              {projects.map((p) => (
+                <button key={p._id} onClick={() => openProject(p._id)}
+                  className={`block w-full rounded-lg border p-2 text-left text-xs ${openProj?._id === p._id ? 'border-slate-900 bg-slate-50' : 'border-slate-200 hover:border-slate-300'}`}>
+                  <div className="font-medium text-slate-800">{p.name}</div>
+                  <div className="text-[11px] text-slate-500">{p.pageCount} floors · {p.status}{p.metrics?.F1 != null ? ` · F1 ${p.metrics.F1.toFixed(2)}` : ''}{p.pageCountMatch === false ? ' · ⚠ page mismatch' : ''}</div>
+                </button>
+              ))}
+            </div>
+            <div className="col-span-8">
+              {openProj ? (
+                <div>
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-800">{openProj.name}</span>
+                    <button onClick={() => runProjectAI(openProj._id)} disabled={busy === 'run'} className="rounded border border-slate-300 px-2 py-1 text-[11px] hover:bg-slate-50">{busy === 'run' ? 'Running…' : 'Run AI on BEFORE'}</button>
+                    <button onClick={() => evaluateProject(openProj._id)} disabled={busy === 'eval'} className="rounded border border-slate-300 px-2 py-1 text-[11px] hover:bg-slate-50">{busy === 'eval' ? 'Evaluating…' : 'Evaluate vs engineer'}</button>
+                  </div>
+                  <table className="w-full text-left text-[11px]">
+                    <thead className="text-slate-400"><tr><th className="py-1">Floor</th><th>Type</th><th>Match</th><th>Engineer</th><th>AI</th><th>F1</th></tr></thead>
+                    <tbody>
+                      {(openProj.floors ?? []).map((f: any) => (
+                        <tr key={f._id} className="border-t border-slate-100">
+                          <td className="py-1">{f.pageIndex}</td>
+                          <td>
+                            <select value={f.floorType} onChange={(e) => setFloorType(f._id, openProj._id, e.target.value)}
+                              className="rounded border border-slate-200 bg-white px-1 py-0.5 text-[11px]">
+                              {['site', 'ground', 'first', 'second', 'basement', 'roof', 'unknown'].map((t) => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          </td>
+                          <td className={f.matchConfidence < 0.7 ? 'text-amber-600' : 'text-slate-500'}>{Math.round((f.matchConfidence ?? 1) * 100)}%</td>
+                          <td>{f.counts?.devices ?? 0}</td>
+                          <td>{f.prediction ? Object.values(f.prediction.deviceCounts ?? {}).reduce((a: number, b: any) => a + b, 0) : '—'}</td>
+                          <td>{f.evalMetrics?.F1 != null ? f.evalMetrics.F1.toFixed(2) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <p className="text-xs text-slate-400">Select a project to see its floors, run the AI, and evaluate against engineer placements.</p>}
+            </div>
+          </div>
+        </section>
 
         <div className="mt-6 grid grid-cols-12 gap-6">
           {/* Samples list */}

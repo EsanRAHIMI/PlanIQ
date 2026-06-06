@@ -10,6 +10,12 @@ from typing import List
 from shapely.geometry import Polygon, Point
 
 from .spaces import classify, normalize_label_text, ZONE_LABELS
+from .textfilter import filter_tokens
+
+# How far (normalized) outside a room polygon an OCR label may sit and still be
+# attached to that room — CAD labels often straddle a thin partition or sit just
+# outside the segmented boundary.
+LABEL_RADIUS = 0.05
 
 # Rough plausible normalized-area band per type; used as a soft plausibility signal.
 _AREA_BAND = {
@@ -46,20 +52,31 @@ def _blend(label_score: float, ocr_conf: float, area_plaus: float) -> float:
 
 
 def _area_bucket(area: float):
-    """Fallback typing when no label was found. Deliberately LOW confidence so the user
-    reviews it (matches the 'unknown → confirm' principle), not forced as ground truth."""
+    """Fallback when no label was found. We DO NOT invent a confident room type
+    (the old code returned 'bedroom' for any mid-size room, which is the root of the
+    'everything is a bedroom' problem). Instead we mark the space 'unclassified' so the
+    engineer confirms it. A coarse size hint is kept only in the label text."""
     if area > 0.12:
-        return "living_room", "Living"
-    if area > 0.05:
-        return "bedroom", "Room"
-    if area > 0.02:
-        return "corridor", "Space"
-    return "store", "Small space"
+        hint = "Large space"
+    elif area > 0.05:
+        hint = "Room"
+    elif area > 0.02:
+        hint = "Small space"
+    else:
+        hint = "Compact space"
+    return "unclassified", hint
 
 
 def fuse(rooms_geo: List[dict], texts: List[dict], detections: List[dict]):
     rooms = []
     used_text = set()
+
+    # Pre-filter OCR tokens: strip dimensions, level tags, grid bubbles and door/window
+    # marks so only plausible room labels reach the classifier. Keep originals for zones.
+    raw_texts = texts
+    label_texts = filter_tokens(texts)
+    # Map filtered tokens back to their index in the original list (for used_text bookkeeping).
+    label_index = [raw_texts.index(t) for t in label_texts]
 
     for rg in rooms_geo:
         area = rg["area"]
@@ -68,24 +85,36 @@ def fuse(rooms_geo: List[dict], texts: List[dict], detections: List[dict]):
         source = "area_heuristic"
         signals = {}
 
-        # assign the best OCR label whose center lies inside this room
-        for ti, t in enumerate(texts):
+        # Pick the best label for this room: classifiable tokens, scored by match strength,
+        # preferring tokens INSIDE the polygon, then the nearest within LABEL_RADIUS.
+        cx, cy = rg["centroid"]
+        best = None  # (priority, score, ti, rtype, ocr_conf, text)
+        for li, t in enumerate(label_texts):
+            ti = label_index[li]
             if ti in used_text:
-                continue
-            if not _point_in(rg["polygon"], t["center"]):
                 continue
             res = classify(t["text"])
             if not res:
                 continue
-            rtype, label_score = res
-            ocr_conf = float(t.get("conf", 0.6))
+            cand_type, label_score = res
+            tx, ty = t["center"]
+            inside = _point_in(rg["polygon"], t["center"])
+            dist = ((tx - cx) ** 2 + (ty - cy) ** 2) ** 0.5
+            if not inside and dist > LABEL_RADIUS:
+                continue
+            # inside beats nearby; within that, higher label score, then closer.
+            priority = (1 if inside else 0, round(label_score, 3), -dist)
+            if best is None or priority > best[0]:
+                best = (priority, label_score, ti, cand_type, float(t.get("conf", 0.6)), t["text"])
+
+        if best is not None:
+            _, label_score, ti, rtype, ocr_conf, text = best
             plaus = _area_plausibility(rtype, area)
-            label, rawlabel = t["text"], t["text"]
+            label, rawlabel = text, text
             conf = _blend(label_score, ocr_conf, plaus)
             source = "ocr_label"
             signals = {"labelScore": round(label_score, 2), "ocrConf": round(ocr_conf, 2), "areaPlausibility": round(plaus, 2)}
             used_text.add(ti)
-            break
 
         if rtype is None:
             rtype, label = _area_bucket(area)

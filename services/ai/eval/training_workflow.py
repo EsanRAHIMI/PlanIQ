@@ -49,7 +49,7 @@ def _analyze_before(pdf, page, priors=None, floor_type=None):
     from app.pipeline.preprocess import preprocess
     from app.pipeline.geometry import extract_walls, segment_rooms
     from app.pipeline.ocr import read_text
-    from app.pipeline.fusion import fuse
+    from app.pipeline.fusion import fuse_with_labels
     from app.pipeline import architecture as arch
     from app.pipeline.textfilter import filter_tokens
     from app.rules.engine import suggest
@@ -63,7 +63,7 @@ def _analyze_before(pdf, page, priors=None, floor_type=None):
     for rg in rooms_geo:
         rg["polygon"] = arch.snap_orthogonal(rg["polygon"])
     texts = read_text(bgr)
-    rooms_raw, zones = fuse(rooms_geo, texts, [])
+    rooms_raw, zones = fuse_with_labels(pp["binary"], pp["extent"], rooms_geo, texts, [])
     arch.type_rooms_by_geometry(rooms_raw, geo)
     zones = zones + arch.geometry_zones(geo)
     accepted, _, _ = filter_rooms(rooms_raw, None)

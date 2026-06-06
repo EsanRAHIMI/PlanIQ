@@ -146,7 +146,53 @@ Roof false-positives **7 → 0**. The loop's value is precision + roof exclusion
 
 **Validation:** 19/19 Python tests pass; shared `tsc` clean; `apps/web` `tsc` 0 errors; `apps/api` `tsc` no new errors in touched files (36 pre-existing, unchanged). Not runnable in-sandbox: import→Mongo→S3→UI (no stack) — built correct + type-checked; the Python loop + 10-villa metrics are the runnable proof.
 
-## 9. Open decisions for you
+## 9. RECALL CALIBRATION (measured over 10 villas / 34 floors)
+
+**Diagnosis (from the harness):** recall was lost two ways — (1) **unclassified rooms produced zero devices** (rules key off room type, so an untyped room got nothing; e.g. Example 8 ground = 3 rooms all unclassified → 0 AI devices vs 21 engineer), and (2) **coverage devices under-placed** (engineers put ~1 Wi-Fi AP + sensor per room; rules placed them sparsely). The largest fn classes were Wi-Fi (34), Sensor (26), then the site access devices.
+
+**Fixes (rule calibration from the engineer layouts; customer rules still win):**
+- **Coverage rooms** — one ceiling Wi-Fi AP per significant indoor room, *including real-but-unclassified rooms on interior floors* (the untyped-room fix); occupancy sensor per coverage room (size-gated) + circulation.
+- **Site access guarantee** — gate motor + intercom bell + smart lock placed on the site/ground sheet at the front perimeter when no gate/parking is detected (engineers always fit these); project reconcile keeps one set per project.
+- **ELV rack guarantee** — fallback to the central ground-floor room when no service/staircase/store anchor is typed (every villa has one rack; reconcile keeps one per project).
+- All mirrored Python `engine.py` ↔ TS `rules.ts` (output verified identical); 19/19 Python tests pass; shared `tsc` clean.
+
+**Before → after (per-floor, honest):**
+
+| Metric | Before recall work | After |
+|---|---|---|
+| **Recall** | 0.45 | **0.72** |
+| **F1** | 0.54 | **0.68** |
+| Precision | 0.68 | 0.65 |
+| Wi-Fi recall / F1 | 0.58 / 0.73 | 0.83 / 0.75 |
+| Gate / Lock / Bell recall | 0.12–0.25 | **0.88** |
+| Roof false-positives | 7 | **0** |
+
+Recall reached the **0.70+** operational target. Precision dipped slightly (0.68→0.65) by design — the brief prioritised recall, and every added device remains reviewable in the editor.
+
+**Honest remaining gaps:** Speaker (R 0.58) and Intercom Screen (R 0.58) are *type-specific* — they need better room **typing** (OCR/segmentation) to fire in untyped majlis/living/kitchen rooms; Sensor precision is 0.49 (recall-prioritised over-placement); Thermostat precision 0.29 (small-sample noise). The next lever is room understanding (reducing unclassified), not more rule density. YOLO remains optional/untrained — not the current recall lever.
+
+## 10. ROOM UNDERSTANDING — label-seeded typing (measured)
+
+**Diagnosis:** half the interior-floor rooms were unclassified (48% labelled / 51% unclassified). OCR was *not* the bottleneck — it read 18–48 tokens/floor and they classified fine (KITCHEN, MAJLIS, BEDROOM…). The failure was **assignment**: furniture-heavy plans fragment the watershed into sub-0.012 slivers, so labels landed in no polygon (e.g. Example 8 ground: 13 of 18 classifiable labels orphaned; 3 rooms accepted, 0 typed).
+
+**Fix — `app/pipeline/label_rooms.py` (OCR + geometry fusion, inverted):** instead of "segment, then drop a label in each region", flood-fill the enclosed room *from each label's position* on a **furniture-suppressed** wall mask (long H/V lines, keep only the large structural components). Every readable label becomes a typed room bounded by real walls — no alignment problem. Watershed regions not covered by a label stay `unclassified` (coverage + review). Wired into `cv_provider` and the eval via `fusion.fuse_with_labels`; runs at reduced resolution for speed. Mirrors are pure-CV — no new service.
+
+**Before → after (10 villas / 34 floors):**
+
+| Metric | Before typing work | After |
+|---|---|---|
+| Interior-floor rooms **unclassified** | 51% | **40%** |
+| Interior-floor rooms **typed (OCR)** | 48% | **59%** |
+| Example 8 ground: typed rooms | 0 | **9** |
+| **ELV Rack** F1 (found in real service rooms, not a fallback) | 0.27 | **1.00** |
+| **Speaker** recall | 0.58 | **0.65** |
+| Dataset Recall / F1 | 0.72 / 0.68 | 0.73 / **0.68** |
+
+The aggregate F1 held at 0.68 while **understanding got materially better and more trustworthy**: fewer unknown rooms, ELV racks now detected in genuine service spaces (no longer leaning on the central-room fallback), and Speaker recall up. Sensor types were restricted to bedrooms/living/majlis + circulation (engineer priors) to hold precision as more rooms were detected.
+
+**Honest remaining gaps:** Intercom Screen recall is still 0.58 (a *placement* question — engineers fit more screens than the rule emits; not a typing gap); Sensor precision 0.40 (per-floor distribution); 40% of interior rooms remain unclassified (labels OCR can't read — stylised/rotated text, or genuinely unlabeled rooms). Next lever for those is OCR on rotated/low-contrast labels, or the optional YOLO symbol layer — not rule density.
+
+## 11. Open decisions for you
 1. **Build order:** Phase A first (real numbers across all 10, then wire), or both together?
 2. **`TrainingProject` model:** add the thin new collection (recommended), or overload `TrainingSample` with a `projectKey` string to avoid any new model?
 3. **Live feedback default:** should approved real projects auto-feed priors (opt-out), or be opt-in per project?

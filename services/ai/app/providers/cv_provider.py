@@ -7,7 +7,7 @@ from ..pipeline.preprocess import preprocess
 from ..pipeline.geometry import extract_walls, segment_rooms
 from ..pipeline.ocr import read_text
 from ..pipeline.detect import detect_symbols
-from ..pipeline.fusion import fuse
+from ..pipeline.fusion import fuse_with_labels
 from ..pipeline import architecture as arch
 from ..rules.engine import suggest
 from ..rules.quality import filter_rooms, apply_placement_qc, build_summary
@@ -34,7 +34,7 @@ class CvProvider(VisionProvider):
         if not detections:
             warnings.append("symbol detector returned nothing (untrained weights?)")
 
-        raw_rooms, zones = fuse(rooms_geo, texts, detections)
+        raw_rooms, zones = fuse_with_labels(pp["binary"], pp["extent"], rooms_geo, texts, detections)
         # Type spaces from geometry where OCR was silent (stairs, perimeter entrances).
         geo_typed = arch.type_rooms_by_geometry(raw_rooms, geo)
         zones = zones + arch.geometry_zones(geo)

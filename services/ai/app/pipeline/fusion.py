@@ -154,3 +154,48 @@ def fuse(rooms_geo: List[dict], texts: List[dict], detections: List[dict]):
             zones.append({"type": "staircase", "geometry": {"kind": "point", "coords": [center]}, "confidence": d["confidence"], "source": "cv"})
 
     return rooms, zones
+
+
+def _build_zones(texts, detections):
+    """Zones from labels (gate/parking/street/…) and symbol detections."""
+    zones = []
+    for t in texts:
+        k = normalize_label_text(t["text"])
+        for syn, ztype in ZONE_LABELS.items():
+            if syn in k:
+                zones.append({"type": ztype, "geometry": {"kind": "point", "coords": [t["center"]]},
+                              "confidence": round(min(0.9, 0.5 + float(t.get("conf", 0.6)) / 2), 3), "source": "cv"})
+                break
+    for d in detections:
+        cls = d["class"]; x, y, w, h = d["bbox"]; center = [x + w / 2, y + h / 2]
+        z = {"gate": "gate", "parking_symbol": "parking", "stair": "staircase"}.get(cls)
+        if z:
+            zones.append({"type": z, "geometry": {"kind": "point", "coords": [center]}, "confidence": d["confidence"], "source": "cv"})
+    return zones
+
+
+def fuse_with_labels(binary, extent, rooms_geo, texts, detections):
+    """OCR+geometry fusion via label-seeded typing (see pipeline.label_rooms).
+
+    Typed rooms come from flood-filling each readable OCR label (robust to furniture-fragmented
+    segmentation); watershed regions not covered by any label become 'unclassified' coverage
+    rooms so unlabeled spaces are still detected and reviewable. Returns (rooms, zones)."""
+    from .label_rooms import label_seeded_rooms  # lazy import avoids a cycle
+    typed_rooms, claimed = label_seeded_rooms(binary, extent, texts)
+    ch, cw = claimed.shape                 # claimed may be at reduced resolution
+    rooms = list(typed_rooms)
+    for rg in rooms_geo:
+        cx, cy = rg["centroid"]            # normalized → index into claimed's own dims
+        px, py = int(cx * cw), int(cy * ch)
+        if 0 <= py < ch and 0 <= px < cw and claimed[py, px]:
+            continue                       # already typed by a label-seeded room
+        rtype, label = _area_bucket(rg["area"])
+        plaus = _area_plausibility(rtype, rg["area"])
+        rooms.append({
+            "label": label, "rawLabel": None, "type": rtype,
+            "polygon": rg["polygon"], "centroid": rg["centroid"], "area": rg["area"],
+            "confidence": round(0.36 + 0.08 * plaus, 3), "source": "cv",
+            "meta": {"classificationSource": "area_heuristic",
+                     "signals": {"labelScore": 0.0, "ocrConf": 0.0, "areaPlausibility": round(plaus, 2)}},
+        })
+    return rooms, _build_zones(texts, detections)

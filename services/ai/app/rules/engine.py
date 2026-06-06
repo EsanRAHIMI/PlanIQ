@@ -258,6 +258,11 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]],
         rack_room, why = by("store")[0], "store (verify indoor + AC)"
     elif (by("main_entrance") + by("entrance") + by("main_door")):
         rack_room, why = (by("main_entrance") + by("entrance") + by("main_door"))[0], "house entrance (near main DBs)"
+    elif (floor_type or "").lower() == "ground" and rooms:
+        # Every villa has one ELV rack; if no service/staircase/store anchor was typed, fall
+        # back to the most central room on the ground floor (approximate — verify service/AC).
+        rack_room = min(rooms, key=lambda r: (r["centroid"][0] - 0.5) ** 2 + (r["centroid"][1] - 0.5) ** 2)
+        why = "fallback (central ground-floor room — verify service/AC room)"
     if rack_room:
         x, y = rack_room["centroid"]
         out.append(_place("ELV_RACK", x, y, f"ELV rack — {why} (not on a column)", 0.82))
@@ -303,9 +308,11 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]],
     # ── Motion / occupancy sensors — engineers sensor MAIN rooms + circulation (~1.5/floor),
     #    not every small room. Gate coverage rooms by area so precision holds. ─────────────
     SENSOR_MIN_AREA = 0.035
-    # Sensor indoor coverage rooms (incl. real-but-unclassified interior rooms — they need
-    # occupancy too) above a size gate, plus circulation. Recall-prioritised per the brief.
-    sensor_rooms = [r for r in coverage if r.get("area", 0) >= SENSOR_MIN_AREA]
+    # Engineers sensor bedrooms + main living/reception (priors: bedroom 0.92, majlis/living
+    # high) + circulation — NOT every room. Restricting types holds precision now that typing
+    # detects more rooms.
+    SENSOR_TYPES = {"bedroom", "master_bedroom", "majlis", "living_room", "sitting_area"}
+    sensor_rooms = [r for r in rooms if r["type"] in SENSOR_TYPES and r.get("area", 0) >= SENSOR_MIN_AREA]
     for extra in (by("corridor") + by("staircase") + by("entrance") + by("main_entrance") + by("lift")):
         if extra not in sensor_rooms:
             sensor_rooms.append(extra)

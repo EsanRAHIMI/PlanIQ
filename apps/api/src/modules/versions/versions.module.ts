@@ -2,8 +2,9 @@ import { Module, Injectable, Controller, Get, Post, Param, Body, NotFoundExcepti
 import { MongooseModule, InjectModel } from '@nestjs/mongoose';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Model } from 'mongoose';
-import { MODELS, VersionSchema, PlacementSchema, DetectedRoomSchema, DetectedZoneSchema, FloorSchema } from '../../db/schemas';
+import { MODELS, VersionSchema, PlacementSchema, DetectedRoomSchema, DetectedZoneSchema, FloorSchema, ProjectSchema } from '../../db/schemas';
 import { CurrentUser, AuthUser } from '../../common/decorators';
+import { assertProjectMember } from '../../common/project-access';
 
 @Injectable()
 export class VersionsService {
@@ -13,20 +14,30 @@ export class VersionsService {
     @InjectModel(MODELS.DetectedRoom) private rooms: Model<any>,
     @InjectModel(MODELS.DetectedZone) private zones: Model<any>,
     @InjectModel(MODELS.Floor) private floors: Model<any>,
+    @InjectModel(MODELS.Project) private projects: Model<any>,
   ) {}
 
-  list(user: AuthUser, floorId: string) {
+  private async assertFloor(user: AuthUser, floorId: string, min: 'viewer' | 'editor' | 'manager' = 'viewer') {
+    const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean<any>();
+    if (!floor) throw new NotFoundException('Floor not found');
+    const project = await this.projects.findOne({ _id: floor.projectId, tenantId: user.tenantId }).lean<any>();
+    if (!project) throw new NotFoundException('Project not found');
+    assertProjectMember(user, project, min);
+    return floor;
+  }
+
+  async list(user: AuthUser, floorId: string) {
+    await this.assertFloor(user, floorId, 'viewer');
     return this.versions.find({ floorId, tenantId: user.tenantId }).sort({ number: -1 }).select('-snapshot').lean();
   }
 
   async snapshot(user: AuthUser, floorId: string, body: { label?: string; note?: string }) {
-    const floor = await this.floors.findById(floorId).lean();
-    if (!floor) throw new NotFoundException();
+    const floor = await this.assertFloor(user, floorId, 'editor');
     const [placements, rooms, zones, last] = await Promise.all([
-      this.placements.find({ floorId }).lean(),
-      this.rooms.find({ floorId }).lean(),
-      this.zones.find({ floorId }).lean(),
-      this.versions.findOne({ floorId }).sort({ number: -1 }).lean(),
+      this.placements.find({ floorId, tenantId: user.tenantId }).lean(),
+      this.rooms.find({ floorId, tenantId: user.tenantId }).lean(),
+      this.zones.find({ floorId, tenantId: user.tenantId }).lean(),
+      this.versions.findOne({ floorId, tenantId: user.tenantId }).sort({ number: -1 }).lean<any>(),
     ]);
     return this.versions.create({
       tenantId: user.tenantId, floorId, projectId: floor.projectId,
@@ -35,15 +46,21 @@ export class VersionsService {
     });
   }
 
-  get(user: AuthUser, id: string) { return this.versions.findOne({ _id: id, tenantId: user.tenantId }).lean(); }
+  async get(user: AuthUser, id: string) {
+    const v = await this.versions.findOne({ _id: id, tenantId: user.tenantId }).lean<any>();
+    if (!v) throw new NotFoundException('Version not found');
+    await this.assertFloor(user, String(v.floorId), 'viewer');
+    return v;
+  }
 
   async restore(user: AuthUser, id: string) {
-    const v = await this.versions.findOne({ _id: id, tenantId: user.tenantId }).lean();
-    if (!v) throw new NotFoundException();
+    const v = await this.versions.findOne({ _id: id, tenantId: user.tenantId }).lean<any>();
+    if (!v) throw new NotFoundException('Version not found');
+    await this.assertFloor(user, String(v.floorId), 'editor');     // restore destroys current devices
     await this.snapshot(user, String(v.floorId), { label: 'Auto-snapshot before restore' });
-    await this.placements.deleteMany({ floorId: v.floorId });
+    await this.placements.deleteMany({ floorId: v.floorId, tenantId: user.tenantId });
     if (v.snapshot.placements?.length) {
-      await this.placements.insertMany(v.snapshot.placements.map((p: any) => ({ ...p, _id: undefined })));
+      await this.placements.insertMany(v.snapshot.placements.map((p: any) => ({ ...p, _id: undefined, tenantId: user.tenantId })));
     }
     return { ok: true, restored: v.number };
   }
@@ -66,6 +83,7 @@ export class VersionsController {
     { name: MODELS.DetectedRoom, schema: DetectedRoomSchema },
     { name: MODELS.DetectedZone, schema: DetectedZoneSchema },
     { name: MODELS.Floor, schema: FloorSchema },
+    { name: MODELS.Project, schema: ProjectSchema },
   ])],
   controllers: [VersionsController],
   providers: [VersionsService],

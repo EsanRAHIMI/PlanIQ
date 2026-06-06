@@ -173,8 +173,11 @@ export function suggestPlacements(
   for (const k of byType('kitchen')) out.push(place('INTERCOM_SCREEN', k.centroid[0], k.centroid[1], `Service intercom screen — ${k.label ?? 'kitchen'}`, 0.8, 0, { mountHeight: 1.4 }));
   for (const p of byType('pantry')) out.push(place('INTERCOM_SCREEN', p.centroid[0], p.centroid[1], 'Intercom screen — pantry', 0.74, 0, { mountHeight: 1.4 }));
   for (const m of byType('maid_room')) out.push(place('INTERCOM_SCREEN', m.centroid[0], m.centroid[1], 'Intercom screen — maid room', 0.78, 0, { mountHeight: 1.4 }));
-  const mainLiving = largest(rooms, ['majlis', 'living_room']);
-  if (mainLiving) out.push(place('INTERCOM_SCREEN', mainLiving.centroid[0] + 0.02, mainLiving.centroid[1], `Main intercom screen — ${mainLiving.label ?? 'living'}`, 0.8, 0, { mountHeight: 1.4 }));
+  // Intercom screen in each main living/reception room (priors: living 0.45, majlis), not
+  // only the single largest — boosts intercom recall.
+  for (const r of [...byType('majlis'), ...byType('living_room')]) {
+    out.push(place('INTERCOM_SCREEN', r.centroid[0] + 0.02, r.centroid[1], `Intercom screen — ${r.label ?? r.type}`, 0.78, 0, { mountHeight: 1.4 }));
+  }
   for (const s of byType('staircase').slice(0, 1)) out.push(place('INTERCOM_SCREEN', s.centroid[0], s.centroid[1], 'Floor intercom screen — near staircase', 0.74, 0, { mountHeight: 1.4 }));
 
   // ── ELV rack priority chain: staircase → service → electrical/DB → indoor store →
@@ -227,6 +230,11 @@ export function suggestPlacements(
     out.push(place('SPEAKER', cx - 0.035, cy, `Ceiling speaker L — ${label}${note}`, 0.74));
     out.push(place('SPEAKER', cx + 0.035, cy, `Ceiling speaker R — ${label}${note}`, 0.74));
     out.push(place('VOLUME_CONTROL', cx, cy + 0.05, `Volume control (near switches) — ${label}`, 0.7, 0, { mountHeight: 1.3 }));
+  }
+  // Engineers also fit a ceiling speaker in circulation corridors (priors: corridor 0.57).
+  for (const c of byType('corridor')) {
+    if (c.area >= HALL_AREA) continue;     // wide halls already handled above
+    out.push(place('SPEAKER', c.centroid[0], c.centroid[1], `Ceiling speaker — ${c.label ?? 'corridor'}`, 0.7));
   }
 
   // ── Motion / occupancy sensors — engineers sensor bedrooms + main living/reception

@@ -15,12 +15,12 @@ export function Toolbar({
   floors?: FloorOption[]; currentFloorId?: string; onSelectFloor?: (id: string) => void;
   projectHref?: string;
 }) {
-  const { undo, redo, duplicateSelected, deleteSelected, rotateSelected, toggleLock, toggleHide, groupSelected, selectedIds } = useEditor();
+  const { undo, redo, duplicateSelected, deleteSelected, rotateSelected, toggleLock, toggleHide, selectedIds, past, future } = useEditor();
   const [showAdmin, setShowAdmin] = useState(false);
   useEffect(() => { fetchMe().then((u) => setShowAdmin(isAdminRole(u?.globalRole))); }, []);
   const has = selectedIds.length > 0;
-  const Btn = ({ onClick, children, disabled }: any) => (
-    <button className="btn-ghost px-2.5 py-1.5 text-xs" onClick={onClick} disabled={disabled}>{children}</button>
+  const Btn = ({ onClick, children, disabled, title }: any) => (
+    <button className="btn-ghost px-2.5 py-1.5 text-xs" onClick={onClick} disabled={disabled} title={title}>{children}</button>
   );
   return (
     <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
@@ -41,15 +41,17 @@ export function Toolbar({
       )}
       <span className="text-xs text-slate-400">{saving ? 'Saving…' : 'Saved'}</span>
       <div className="mx-2 h-5 w-px bg-slate-200" />
-      <Btn onClick={undo}>↶ Undo</Btn>
-      <Btn onClick={redo}>↷ Redo</Btn>
+      <Btn onClick={undo} disabled={past.length === 0} title="Undo (Ctrl/Cmd+Z)">↶ Undo</Btn>
+      <Btn onClick={redo} disabled={future.length === 0} title="Redo (Ctrl/Cmd+Shift+Z)">↷ Redo</Btn>
       <div className="mx-2 h-5 w-px bg-slate-200" />
-      <Btn onClick={duplicateSelected} disabled={!has}>Duplicate</Btn>
-      <Btn onClick={() => rotateSelected(15)} disabled={!has}>Rotate</Btn>
-      <Btn onClick={toggleLock} disabled={!has}>Lock</Btn>
-      <Btn onClick={toggleHide} disabled={!has}>Hide</Btn>
-      <Btn onClick={groupSelected} disabled={selectedIds.length < 2}>Group</Btn>
-      <Btn onClick={deleteSelected} disabled={!has}>Delete</Btn>
+      <Btn onClick={duplicateSelected} disabled={!has} title="Duplicate (Ctrl/Cmd+D)">Duplicate</Btn>
+      <Btn onClick={() => rotateSelected(15)} disabled={!has} title="Rotate 15°">Rotate</Btn>
+      <Btn onClick={toggleLock} disabled={!has} title="Lock / unlock selection">Lock</Btn>
+      <Btn onClick={toggleHide} disabled={!has} title="Hide selection (use the “All” canvas toggle to see and unhide hidden devices)">Hide</Btn>
+      {/* Grouping is not production-ready (no multi-select propagation / ungroup yet) — disabled
+          rather than shipped half-working, per the reliability phase. */}
+      <Btn disabled title="Grouping isn’t available yet">Group</Btn>
+      <Btn onClick={deleteSelected} disabled={!has} title="Delete selection (Del)">Delete</Btn>
       <div className="ml-auto flex gap-2">
         {showAdmin && (
           <Link href="/admin" className="btn-ghost px-2.5 py-1.5 text-xs" title="Admin Control Center">

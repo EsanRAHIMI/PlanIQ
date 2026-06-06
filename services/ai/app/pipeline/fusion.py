@@ -183,12 +183,46 @@ def fuse_with_labels(binary, extent, rooms_geo, texts, detections):
     from .label_rooms import label_seeded_rooms  # lazy import avoids a cycle
     typed_rooms, claimed = label_seeded_rooms(binary, extent, texts)
     ch, cw = claimed.shape                 # claimed may be at reduced resolution
+    label_texts = filter_tokens(texts)
     rooms = list(typed_rooms)
+
+    def _is_claimed(nx, ny):
+        px, py = int(nx * cw), int(ny * ch)
+        return 0 <= py < ch and 0 <= px < cw and claimed[py, px]
+
     for rg in rooms_geo:
-        cx, cy = rg["centroid"]            # normalized → index into claimed's own dims
-        px, py = int(cx * cw), int(cy * ch)
-        if 0 <= py < ch and 0 <= px < cw and claimed[py, px]:
+        cx, cy = rg["centroid"]
+        if _is_claimed(cx, cy):
             continue                       # already typed by a label-seeded room
+        # Containment fallback: a watershed room the flood-fill missed may still have a
+        # classifiable label inside it (or just outside). Type it the old way before giving up.
+        best = None
+        for t in label_texts:
+            if _is_claimed(t["center"][0], t["center"][1]):
+                continue                   # that label already typed another room
+            res = classify(t["text"])
+            if not res:
+                continue
+            cand, score = res
+            inside = _point_in(rg["polygon"], t["center"])
+            dist = ((t["center"][0] - cx) ** 2 + (t["center"][1] - cy) ** 2) ** 0.5
+            if not inside and dist > LABEL_RADIUS:
+                continue
+            priority = (1 if inside else 0, round(score, 3), -dist)
+            if best is None or priority > best[0]:
+                best = (priority, cand, score, float(t.get("conf", 0.6)), t["text"])
+        if best is not None:
+            _, rtype, score, ocr_conf, text = best
+            plaus = _area_plausibility(rtype, rg["area"])
+            rooms.append({
+                "label": text, "rawLabel": text, "type": rtype,
+                "polygon": rg["polygon"], "centroid": rg["centroid"], "area": rg["area"],
+                "confidence": min(0.97, _blend(score, ocr_conf, plaus)), "source": "cv",
+                "meta": {"classificationSource": "ocr_label",
+                         "signals": {"labelScore": round(score, 2), "ocrConf": round(ocr_conf, 2),
+                                     "areaPlausibility": round(plaus, 2)}, "typing": "containment"},
+            })
+            continue
         rtype, label = _area_bucket(rg["area"])
         plaus = _area_plausibility(rtype, rg["area"])
         rooms.append({

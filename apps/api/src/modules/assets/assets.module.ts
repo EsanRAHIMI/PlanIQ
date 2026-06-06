@@ -7,10 +7,11 @@ import { ConfigService } from '@nestjs/config';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Model } from 'mongoose';
 import { Queue } from 'bullmq';
-import { MODELS, PlanAssetSchema, FloorSchema } from '../../db/schemas';
+import { MODELS, PlanAssetSchema, FloorSchema, ProjectSchema } from '../../db/schemas';
 import { StorageService } from '../storage/storage.service';
 import { ANALYSIS_QUEUE } from '../queue/queue.module';
 import { CurrentUser, AuthUser } from '../../common/decorators';
+import { assertProjectMember } from '../../common/project-access';
 
 const ALLOWED: Record<string, string> = {
   'application/pdf': 'pdf', 'image/png': 'png', 'image/jpeg': 'jpg',
@@ -21,12 +22,29 @@ export class AssetsService {
   constructor(
     @InjectModel(MODELS.PlanAsset) private assets: Model<any>,
     @InjectModel(MODELS.Floor) private floors: Model<any>,
+    @InjectModel(MODELS.Project) private projects: Model<any>,
     private storage: StorageService,
     private config: ConfigService,
     @Inject(ANALYSIS_QUEUE) private queue: Queue,
   ) {}
 
+  private async assertProject(user: AuthUser, projectId: string, min: 'viewer' | 'editor' | 'manager' = 'viewer') {
+    const project = await this.projects.findOne({ _id: projectId, tenantId: user.tenantId }).lean<any>();
+    if (!project) throw new NotFoundException('Project not found');
+    assertProjectMember(user, project, min);
+    return project;
+  }
+
+  /** Membership gate anchored on an asset id (asset → project). */
+  private async assertAsset(user: AuthUser, assetId: string, min: 'viewer' | 'editor' | 'manager' = 'viewer') {
+    const asset = await this.assets.findOne({ _id: assetId, tenantId: user.tenantId });
+    if (!asset) throw new NotFoundException('Asset not found');
+    await this.assertProject(user, String(asset.projectId), min);
+    return asset;
+  }
+
   async createUploadUrl(user: AuthUser, projectId: string, dto: { fileName: string; mime: string; sizeBytes: number; floorId?: string }) {
+    await this.assertProject(user, projectId, 'editor');
     const ext = ALLOWED[dto.mime];
     if (!ext) throw new BadRequestException('Unsupported file type. Allowed: PDF, PNG, JPG');
     const maxBytes = (this.config.get('limits') as any).uploadMaxMb * 1024 * 1024;
@@ -42,8 +60,7 @@ export class AssetsService {
   }
 
   async complete(user: AuthUser, assetId: string) {
-    const asset = await this.assets.findOne({ _id: assetId, tenantId: user.tenantId });
-    if (!asset) throw new NotFoundException('Asset not found');
+    const asset = await this.assertAsset(user, assetId, 'editor');
     if (!(await this.storage.exists(asset.s3Key))) throw new BadRequestException('Upload not found in storage');
     asset.status = 'uploaded'; await asset.save();
 
@@ -57,13 +74,13 @@ export class AssetsService {
   }
 
   async downloadUrl(user: AuthUser, assetId: string) {
-    const asset = await this.assets.findOne({ _id: assetId, tenantId: user.tenantId });
-    if (!asset) throw new NotFoundException();
+    const asset = await this.assertAsset(user, assetId, 'viewer');
     return { url: await this.storage.presignGet(asset.s3Key) };
   }
 
   async processingStatus(user: AuthUser, assetId: string) {
-    const asset = await this.assets.findOne({ _id: assetId, tenantId: user.tenantId }).lean();
+    await this.assertAsset(user, assetId, 'viewer');
+    const asset = await this.assets.findOne({ _id: assetId, tenantId: user.tenantId }).lean<any>();
     if (!asset) throw new NotFoundException('Asset not found');
 
     const floors = await this.floors.find({ 'raster.assetId': asset._id }).sort({ level: 1 }).lean();
@@ -110,6 +127,7 @@ export class AssetsController {
   imports: [MongooseModule.forFeature([
     { name: MODELS.PlanAsset, schema: PlanAssetSchema },
     { name: MODELS.Floor, schema: FloorSchema },
+    { name: MODELS.Project, schema: ProjectSchema },
   ])],
   controllers: [AssetsController],
   providers: [AssetsService],

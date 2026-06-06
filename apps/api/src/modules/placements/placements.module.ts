@@ -8,10 +8,11 @@ import {
 } from '@planiq/shared';
 import {
   MODELS, PlacementSchema, LayerSchema, DetectedRoomSchema, DetectedZoneSchema,
-  FloorSchema, AnalysisRunSchema, SettingSchema,
+  FloorSchema, AnalysisRunSchema, SettingSchema, ProjectSchema,
 } from '../../db/schemas';
 import { ZodValidationPipe } from '../../common/zod.pipe';
 import { CurrentUser, AuthUser } from '../../common/decorators';
+import { assertProjectMember } from '../../common/project-access';
 
 function normalizeRoom(r: any) {
   // User-reviewed spaces (accepted / corrected / manual) are authoritative — bump their
@@ -51,14 +52,35 @@ export class PlacementsService {
     @InjectModel(MODELS.Floor) private floors: Model<any>,
     @InjectModel(MODELS.AnalysisRun) private analysisRuns: Model<any>,
     @InjectModel(MODELS.Setting) private settings: Model<any>,
+    @InjectModel(MODELS.Project) private projects: Model<any>,
   ) {}
 
+  /** Load a floor and assert the user is a project member at `min` role. Editor endpoints
+   *  are project-scoped, so a tenantId filter alone is not sufficient authorization. */
+  private async assertFloor(user: AuthUser, floorId: string, min: 'viewer' | 'editor' | 'manager' = 'viewer') {
+    const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean<any>();
+    if (!floor) throw new NotFoundException('Floor not found');
+    const project = await this.projects.findOne({ _id: floor.projectId, tenantId: user.tenantId }).lean<any>();
+    if (!project) throw new NotFoundException('Project not found');
+    assertProjectMember(user, project, min);
+    return floor;
+  }
+
+  /** Same, anchored on a placement id (for by-id PATCH/DELETE). */
+  private async assertPlacement(user: AuthUser, id: string, min: 'viewer' | 'editor' | 'manager' = 'editor') {
+    const p = await this.placements.findOne({ _id: id, tenantId: user.tenantId }).lean<any>();
+    if (!p) throw new NotFoundException('Placement not found');
+    await this.assertFloor(user, String(p.floorId), min);
+    return p;
+  }
+
   async byFloor(user: AuthUser, floorId: string, debug = false) {
+    await this.assertFloor(user, floorId, 'viewer');
     const query: any = { floorId, tenantId: user.tenantId };
     const [allPlacements, layers, floor] = await Promise.all([
       this.placements.find(query).sort({ zIndex: 1 }).lean(),
       this.layers.find({ floorId, tenantId: user.tenantId }).sort({ order: 1 }).lean(),
-      this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean(),
+      this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean<any>(),
     ]);
     const placements = debug
       ? allPlacements
@@ -67,40 +89,43 @@ export class PlacementsService {
   }
 
   async create(user: AuthUser, floorId: string, dto: any) {
-    const floor = await this.floors.findById(floorId).lean();
+    const floor = await this.assertFloor(user, floorId, 'editor');
     return this.placements.create({ ...dto, floorId, tenantId: user.tenantId, projectId: floor?.projectId });
   }
 
   /** Batch upsert/delete — the editor's debounced autosave. */
   async batch(user: AuthUser, floorId: string, body: { upserts: any[]; deletes: string[] }) {
-    const floor = await this.floors.findById(floorId).lean();
+    const floor = await this.assertFloor(user, floorId, 'editor');
     const ops = body.upserts.map((p) => ({
       updateOne: {
-        filter: { _id: p.id, tenantId: user.tenantId },
+        // Scope by floorId so a batch can only touch placements on THIS floor (an id from
+        // another floor cannot be hijacked/moved). New ids upsert with this floorId.
+        filter: { _id: p.id, tenantId: user.tenantId, floorId },
         update: { $set: { ...p, _id: undefined, floorId, tenantId: user.tenantId, projectId: floor?.projectId } },
         upsert: true,
       },
     }));
     if (ops.length) await this.placements.bulkWrite(ops as any);
-    if (body.deletes?.length) await this.placements.deleteMany({ _id: { $in: body.deletes }, tenantId: user.tenantId });
+    if (body.deletes?.length) await this.placements.deleteMany({ _id: { $in: body.deletes }, tenantId: user.tenantId, floorId });
     const count = await this.placements.countDocuments({ floorId });
     await this.floors.updateOne({ _id: floorId }, { 'counts.placements': count });
     return { ok: true, count };
   }
 
   async updateOne(user: AuthUser, id: string, dto: any) {
+    await this.assertPlacement(user, id, 'editor');
     return this.placements.findOneAndUpdate({ _id: id, tenantId: user.tenantId }, dto, { new: true });
   }
 
   async remove(user: AuthUser, id: string) {
+    await this.assertPlacement(user, id, 'editor');
     await this.placements.deleteOne({ _id: id, tenantId: user.tenantId });
     return { ok: true };
   }
 
   /** Re-run conservative rule engine + QC; replace unreviewed AI placements in DB. */
   async suggest(user: AuthUser, floorId: string) {
-    const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean();
-    if (!floor) throw new NotFoundException('Floor not found');
+    const floor = await this.assertFloor(user, floorId, 'editor');
 
     const settingDoc = await this.settings.findOne({ scope: 'tenant', tenantId: user.tenantId, key: AI_SETTINGS_KEY }).lean();
     const aiSettings = normalizeAiSettings((settingDoc as any)?.value);
@@ -252,6 +277,7 @@ export class PlacementsController {
     { name: MODELS.Floor, schema: FloorSchema },
     { name: MODELS.AnalysisRun, schema: AnalysisRunSchema },
     { name: MODELS.Setting, schema: SettingSchema },
+    { name: MODELS.Project, schema: ProjectSchema },
   ])],
   controllers: [PlacementsController],
   providers: [PlacementsService],

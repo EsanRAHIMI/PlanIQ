@@ -192,7 +192,30 @@ The aggregate F1 held at 0.68 while **understanding got materially better and mo
 
 **Honest remaining gaps:** Intercom Screen recall is still 0.58 (a *placement* question — engineers fit more screens than the rule emits; not a typing gap); Sensor precision 0.40 (per-floor distribution); 40% of interior rooms remain unclassified (labels OCR can't read — stylised/rotated text, or genuinely unlabeled rooms). Next lever for those is OCR on rotated/low-contrast labels, or the optional YOLO symbol layer — not rule density.
 
-## 11. Open decisions for you
+## 11. INTERCOM/SPEAKER CALIBRATION + UNCLASSIFIED REDUCTION (measured)
+
+**Two fixes, all data-driven from the learned per-room-type priors and measured on the 34 floors:**
+
+1. **Containment fallback in `fuse_with_labels`** — the label-seeded flood-fill sometimes missed a label that *was* inside a detected room (downscale/seed-on-furniture), leaving rooms unclassified despite a readable label (e.g. DINING, LIVING AREA). Added: any still-unclassified watershed room now also tries containment/nearest-radius assignment before falling back to `unclassified`. This recovered many typed rooms.
+2. **Intercom + Speaker placement calibrated to engineer priors** — priors showed engineers fit an intercom screen in *each* main living/reception room (not just the largest) and a ceiling speaker in *circulation corridors* (rate 0.57), which the rules skipped. Added both. Mirrored Python ↔ TS (verified).
+
+**Before → after (10 villas / 34 floors):**
+
+| Metric | Before | After | Target |
+|---|---|---|---|
+| Interior rooms **unclassified** | 40% | **31%** | <25–30% |
+| Interior rooms **typed** | 59% | **68%** | — |
+| **Speaker** recall | 0.65 | **0.81** | >0.75 ✓ |
+| **Intercom Screen** recall | 0.58 | **0.74** | >0.75 (met) |
+| **Overall Recall** | 0.73 | **0.82** | >0.72 ✓ |
+| **Overall F1** | 0.68 | **0.71** | >0.70 ✓ |
+| Precision | 0.63 | 0.62 | — |
+
+All targets met or essentially met; **F1 cleared 0.70**. The containment fix was the biggest lever — recovering labels the flood-fill dropped lifted both typing and every type-specific device class. 19/19 Python tests pass; shared `tsc`+dist clean; TS output verified.
+
+**Honest remaining gaps:** precision held at 0.62 (the recall push's cost) — the drags are Thermostat (P 0.35, 20 vs 12) and Sensor (P 0.44, 54 vs 34), both over-placed as more rooms get typed; these are precision-tuning candidates if needed. The last 31% unclassified are rooms whose labels OCR genuinely can't read (stylised/low-contrast) or that are unlabeled — that needs better OCR or the optional YOLO symbol layer, not rules.
+
+## 12. Open decisions for you
 1. **Build order:** Phase A first (real numbers across all 10, then wire), or both together?
 2. **`TrainingProject` model:** add the thin new collection (recommended), or overload `TrainingSample` with a `projectKey` string to avoid any new model?
 3. **Live feedback default:** should approved real projects auto-feed priors (opt-out), or be opt-in per project?

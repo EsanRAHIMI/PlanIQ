@@ -11,12 +11,13 @@ import {
   AI_SETTINGS_KEY, normalizeAiSettings, type AiCapabilities,
   createRoomSchema, updateRoomSchema,
 } from '@planiq/shared';
-import { MODELS, FloorSchema, DetectedRoomSchema, DetectedZoneSchema, SettingSchema } from '../../db/schemas';
+import { MODELS, FloorSchema, DetectedRoomSchema, DetectedZoneSchema, SettingSchema, ProjectSchema } from '../../db/schemas';
 import { ANALYSIS_QUEUE, REDIS } from '../queue/queue.module';
 import { AiModule } from '../ai/ai.module';
 import { AiService } from '../ai/ai.service';
 import { ZodValidationPipe } from '../../common/zod.pipe';
 import { CurrentUser, AuthUser } from '../../common/decorators';
+import { assertProjectMember } from '../../common/project-access';
 
 /** A square box (normalized) around a centroid — used when the user adds a space manually. */
 function defaultBox(centroid: [number, number], half = 0.05): number[][] {
@@ -53,12 +54,31 @@ export class AnalysisService {
     @InjectModel(MODELS.DetectedRoom) private rooms: Model<any>,
     @InjectModel(MODELS.DetectedZone) private zones: Model<any>,
     @InjectModel(MODELS.Setting) private settings: Model<any>,
+    @InjectModel(MODELS.Project) private projects: Model<any>,
     @Inject(ANALYSIS_QUEUE) private queue: Queue,
     @Inject(REDIS) private redis: IORedis,
     private ai: AiService,
   ) {}
 
+  /** Project-membership gate for a floor (editor endpoints are project-scoped). */
+  private async assertFloor(user: AuthUser, floorId: string, min: 'viewer' | 'editor' | 'manager' = 'viewer') {
+    const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean<any>();
+    if (!floor) throw new NotFoundException('Floor not found');
+    const project = await this.projects.findOne({ _id: floor.projectId, tenantId: user.tenantId }).lean<any>();
+    if (!project) throw new NotFoundException('Project not found');
+    assertProjectMember(user, project, min);
+    return floor;
+  }
+
+  private async assertRoom(user: AuthUser, id: string, min: 'viewer' | 'editor' | 'manager' = 'editor') {
+    const room = await this.rooms.findOne({ _id: id, tenantId: user.tenantId }).lean<any>();
+    if (!room) throw new NotFoundException('Space not found');
+    await this.assertFloor(user, String(room.floorId), min);
+    return room;
+  }
+
   async trigger(user: AuthUser, floorId: string, body: { force?: boolean; provider?: 'cv' | 'llm_fallback' }) {
+    await this.assertFloor(user, floorId, 'editor');
     const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId });
     if (!floor) throw new NotFoundException('Floor not found');
     const job = await this.queue.add('analyze', {
@@ -70,18 +90,18 @@ export class AnalysisService {
   }
 
   async status(user: AuthUser, floorId: string) {
-    const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean();
+    await this.assertFloor(user, floorId, 'viewer');
+    const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean<any>();
     if (!floor) throw new NotFoundException();
     return floor.analysis;
   }
 
-  rooms_(user: AuthUser, floorId: string) { return this.rooms.find({ floorId, tenantId: user.tenantId }).sort({ area: -1 }).lean(); }
-  zones_(user: AuthUser, floorId: string) { return this.zones.find({ floorId, tenantId: user.tenantId }).lean(); }
+  async rooms_(user: AuthUser, floorId: string) { await this.assertFloor(user, floorId, 'viewer'); return this.rooms.find({ floorId, tenantId: user.tenantId }).sort({ area: -1 }).lean(); }
+  async zones_(user: AuthUser, floorId: string) { await this.assertFloor(user, floorId, 'viewer'); return this.zones.find({ floorId, tenantId: user.tenantId }).lean(); }
 
   /** Create a space the AI missed. Manual spaces are user-owned and survive re-analysis. */
   async createRoom(user: AuthUser, floorId: string, dto: any) {
-    const floor = await this.floors.findOne({ _id: floorId, tenantId: user.tenantId }).lean();
-    if (!floor) throw new NotFoundException('Floor not found');
+    const floor = await this.assertFloor(user, floorId, 'editor');
     const centroid = (dto.centroid as [number, number]) ?? [0.5, 0.5];
     const polygon = dto.polygon ?? defaultBox(centroid);
     return this.rooms.create({
@@ -107,6 +127,7 @@ export class AnalysisService {
   /** Edit a space: change type (→ user_corrected, original AI type preserved), accept/reject,
    * rename, or move/reshape. Keeps AI output separate from the user-reviewed state. */
   async updateRoom(user: AuthUser, id: string, dto: any) {
+    await this.assertRoom(user, id, 'editor');
     const room = await this.rooms.findOne({ _id: id, tenantId: user.tenantId });
     if (!room) throw new NotFoundException('Space not found');
     const patch: Record<string, unknown> = { reviewedBy: user.id, reviewedAt: new Date(), reviewed: true };
@@ -129,6 +150,7 @@ export class AnalysisService {
   }
 
   async removeRoom(user: AuthUser, id: string) {
+    await this.assertRoom(user, id, 'editor');
     const res = await this.rooms.deleteOne({ _id: id, tenantId: user.tenantId });
     if (!res.deletedCount) throw new NotFoundException('Space not found');
     return { ok: true };
@@ -197,6 +219,7 @@ export class AnalysisController {
     { name: MODELS.DetectedRoom, schema: DetectedRoomSchema },
     { name: MODELS.DetectedZone, schema: DetectedZoneSchema },
     { name: MODELS.Setting, schema: SettingSchema },
+    { name: MODELS.Project, schema: ProjectSchema },
   ])],
   controllers: [AnalysisController],
   providers: [AnalysisService],

@@ -5,6 +5,7 @@ import { Model } from 'mongoose';
 import { countsFromQcSummary, type AnalysisRunTrace } from '@planiq/shared';
 import { MODELS, AnalysisRunSchema, FloorSchema, ProjectSchema } from '../../db/schemas';
 import { CurrentUser, AuthUser, Roles } from '../../common/decorators';
+import { assertProjectMember } from '../../common/project-access';
 
 function toTrace(doc: any, floor?: any, project?: any): AnalysisRunTrace {
   const qc = doc.qcSummary ?? null;
@@ -51,9 +52,10 @@ export class AnalysisRunsService {
   }
 
   async listForFloor(user: AuthUser, floorId: string, limit = 20) {
-    const floor = await this.floors.findOne({ _id: floorId, ...this.scope(user) }).lean();
+    const floor = await this.floors.findOne({ _id: floorId, ...this.scope(user) }).lean<any>();
     if (!floor) throw new NotFoundException('Floor not found');
-    const project = await this.projects.findById(floor.projectId).select('name').lean();
+    const project = await this.projects.findById(floor.projectId).lean<any>();
+    assertProjectMember(user, project ?? {}, 'viewer');
     const docs = await this.runs.find({ floorId, ...this.scope(user) })
       .sort({ startedAt: -1 }).limit(limit).lean();
     return docs.map((d) => toTrace(d, floor, project));
@@ -65,12 +67,13 @@ export class AnalysisRunsService {
   }
 
   async getById(user: AuthUser, id: string) {
-    const doc = await this.runs.findOne({ _id: id, ...this.scope(user) }).lean();
+    const doc = await this.runs.findOne({ _id: id, ...this.scope(user) }).lean<any>();
     if (!doc) throw new NotFoundException('Analysis run not found');
     const [floor, project] = await Promise.all([
-      this.floors.findById(doc.floorId).select('name').lean(),
-      this.projects.findById(doc.projectId).select('name').lean(),
+      this.floors.findById(doc.floorId).select('name').lean<any>(),
+      this.projects.findById(doc.projectId).lean<any>(),
     ]);
+    assertProjectMember(user, project ?? {}, 'viewer');
     return toTrace(doc, floor, project);
   }
 

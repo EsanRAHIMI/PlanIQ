@@ -234,11 +234,12 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]],
     for m in by("maid_room"):
         out.append(_place("INTERCOM_SCREEN", m["centroid"][0], m["centroid"][1],
                           "Intercom screen — maid room", 0.78, props={"mountHeight": 1.4}))
-    main_living = _largest(rooms, {"majlis", "living_room"})
-    if main_living:
-        x, y = main_living["centroid"]
+    # Engineers fit an intercom screen in each main living/reception room (priors: kitchen
+    # 1.0, living 0.45, majlis) — not only the single largest. Boosts intercom recall.
+    for r in by("majlis") + by("living_room"):
+        x, y = r["centroid"]
         out.append(_place("INTERCOM_SCREEN", min(1, x + 0.02), y,
-                          f"Main intercom screen — {main_living.get('label', 'living')}", 0.8, props={"mountHeight": 1.4}))
+                          f"Intercom screen — {r.get('label', r['type'])}", 0.78, props={"mountHeight": 1.4}))
     for s in by("staircase")[:1]:
         out.append(_place("INTERCOM_SCREEN", s["centroid"][0], s["centroid"][1],
                           "Floor intercom screen — near staircase", 0.74, props={"mountHeight": 1.4}))
@@ -294,7 +295,7 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]],
             out.append(_place("WIFI_AP", c["centroid"][0], c["centroid"][1],
                               "Ceiling Wi-Fi AP — long corridor", 0.68, props={"coverageRadius": 10}))
 
-    # ── Speakers + volume control (entertainment rooms + wide halls) ───────────
+    # ── Speakers + volume control (entertainment rooms + wide halls) — 2 (L/R) per room. ─
     ent_rooms = list(by("majlis")) + list(by("living_room")) + list(by("dining")) + list(by("sitting_area"))
     ent_rooms += [c for c in by("corridor") if c["area"] >= HALL_AREA]  # wide hall used as living
     for r in ent_rooms:
@@ -304,6 +305,13 @@ def suggest(rooms: List[Dict[str, Any]], zones: List[Dict[str, Any]],
         out.append(_place("SPEAKER", max(0, cx - 0.035), cy, f"Ceiling speaker L — {label}{note}", 0.74))
         out.append(_place("SPEAKER", min(1, cx + 0.035), cy, f"Ceiling speaker R — {label}{note}", 0.74))
         out.append(_place("VOLUME_CONTROL", cx, min(1, cy + 0.05), f"Volume control (near switches) — {label}", 0.7, props={"mountHeight": 1.3}))
+    # Engineers also fit a ceiling speaker in circulation corridors (priors: corridor rate
+    # 0.57) for whole-home audio — one per (non-hall) corridor. Recall lever.
+    for c in by("corridor"):
+        if c["area"] >= HALL_AREA:
+            continue                       # wide halls already handled above
+        out.append(_place("SPEAKER", c["centroid"][0], c["centroid"][1],
+                          f"Ceiling speaker — {c.get('label', 'corridor')}", 0.7))
 
     # ── Motion / occupancy sensors — engineers sensor MAIN rooms + circulation (~1.5/floor),
     #    not every small room. Gate coverage rooms by area so precision holds. ─────────────

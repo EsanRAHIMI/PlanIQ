@@ -173,6 +173,18 @@ export default function EditorPage() {
     return () => clearTimeout(saveTimer.current);
   }, [dirty, deleted, saveNow]);
 
+  // Guard against silent data loss: warn if the tab is closed/reloaded while edits are
+  // still pending (within the autosave debounce, or after a failed save kept them queued).
+  useEffect(() => {
+    const beforeUnload = (e: BeforeUnloadEvent) => {
+      if (dirty.size === 0 && deleted.size === 0) return;
+      e.preventDefault();
+      e.returnValue = '';   // shows the browser's "unsaved changes" prompt
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => window.removeEventListener('beforeunload', beforeUnload);
+  }, [dirty, deleted]);
+
   const onSelectFloor = useCallback(async (id: string) => {
     if (!id || id === floorId) return;
     clearTimeout(saveTimer.current);

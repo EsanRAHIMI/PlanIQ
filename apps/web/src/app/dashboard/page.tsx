@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api, loadToken, ApiError } from '@/lib/api';
 import { AppHeader } from '@/components/AppHeader';
 import { StatusPill } from '@/components/StatusPill';
+import { projectCardAttention } from '@/lib/readiness';
 
 export default function Dashboard() {
   const router = useRouter();
@@ -76,12 +77,30 @@ export default function Dashboard() {
                 <StatusPill status={p.status} />
               </div>
               <div className="mt-1 text-sm text-slate-500">{p.code ?? '—'} · {p.client?.name ?? 'No client'}</div>
-              <div className="mt-4 flex gap-4 text-xs text-slate-500">
+              <div className="mt-4 flex items-center gap-4 text-xs text-slate-500">
                 <span>{p.stats?.floors ?? 0} floors</span><span>{p.stats?.devices ?? 0} devices</span>
+                {projectCardAttention(p) && (
+                  <span className={`ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${projectCardAttention(p)!.tone === 'danger' ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-700'}`}>● {projectCardAttention(p)!.label}</span>
+                )}
               </div>
             </Link>
           ))}
-          {!projects.length && <p className="text-slate-500">No projects yet. Create one to get started.</p>}
+          {!projects.length && (
+            <div className="col-span-full">
+              <div className="card p-10 text-center">
+                <h3 className="text-base font-semibold text-slate-900">Welcome to PlanIQ</h3>
+                <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
+                  Create your first project, upload a villa plan, and PlanIQ analyzes each floor and suggests engineering-correct device placements you can review and deliver.
+                </p>
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-1.5 text-xs text-slate-500">
+                  {['Create project', 'Upload plan', 'Analyze', 'Review', 'Export PDF'].map((s, i) => (
+                    <span key={s} className={`rounded-full px-2.5 py-1 ${i === 0 ? 'bg-slate-900 text-white' : 'bg-slate-100'}`}>{i + 1}. {s}</span>
+                  ))}
+                </div>
+                <button className="btn-primary mt-6" onClick={() => setCreating(true)}>Create your first project</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
       </main>

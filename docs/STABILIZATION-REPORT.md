@@ -67,6 +67,37 @@ Static-analysis audit of the full stack (the dev stack — Mongo/S3/Redis — is
 - **Pre-existing API `.lean()` typing** (~13) remain; harmless (builds via `nest build`), worth a cleanup pass.
 - Membership checks add one indexed project lookup per editor request — negligible, but worth confirming under load.
 
+## Reliability validation — smoke tests (written + run)
+
+Three suites exercise the **real** code behind the fixes and were executed here; one HTTP e2e suite is written and run‑ready on the dev stack (it skips cleanly without `API_URL`).
+
+**Commands run**
+- `node --experimental-strip-types apps/api/test/permission.smoke.ts`
+- `node --experimental-strip-types apps/api/test/lifecycle.smoke.ts`
+- `node --experimental-strip-types apps/web/test/editor-store.smoke.ts`
+- `npx jest --config apps/api/test/jest-e2e.json reliability` (skips without `API_URL`)
+- `API_URL=… npm --workspace apps/api run test:e2e` ← run on the dev stack
+
+**Pass/fail matrix**
+
+| Suite | What it proves | Result |
+|---|---|---|
+| permission.smoke (real `assertProjectMember`) | non‑member→403; viewer reads, can't write; editor reads+writes, can't manage; manager manages; owner/global‑admin bypass; empty project rejects | **12/12 pass** |
+| lifecycle.smoke (real `canTransitionProject`) | intended transitions allowed; impossible (draft→delivered, delivered→draft, unknown) rejected; delivery mirror consistent | **15/15 pass** |
+| editor-store.smoke (real Zustand store) | failed autosave keeps dirty (`takeDirty`+`requeueDirty`); delete reversible via undo/redo; requeue ignores ghost ids; locked device not deleted | **8/8 pass** |
+| reliability.e2e-spec (HTTP, dev‑stack) | cross‑tenant 403/404 on floors/placements/rooms/versions/analysis‑runs; member read/write; **batch on floor1 can't delete floor2**; **version restore auto‑snapshots + outsider denied**; create→approve→export→deliver + impossible transition rejected | **written, 6 tests; skips without stack (not executed here)** |
+| Python rules/quality/understanding | engine invariants unchanged | **19/19 pass** |
+
+**Bugs found by these tests:** none new — the suites confirm the C1/C2/H1/H2 fixes hold at the logic level. The lifecycle suite did surface a wrong test *assumption* (review→exported is intended per the documented map, not a bug), which was corrected — no product change.
+
+**Not executed here:** the HTTP integration assertions (per‑endpoint 403, batch floor‑scoping at the query, version‑restore snapshot) require Mongo/S3/Redis. They are encoded in `reliability.e2e-spec.ts` and must be run on the dev stack before launch.
+
+## Remaining launch blockers
+1. **Run `reliability.e2e-spec.ts` on the dev stack** (`API_URL=…`) — the integration half of C1/C2/H2 is validated by logic + static analysis here, but must be confirmed against a live DB.
+2. **M4 — unauthenticated SSE analysis stream** — add a query‑token before public exposure.
+3. **M5 — admin training import/run‑AI run synchronously** — move onto BullMQ before multi‑user load.
+(Non‑blocking: L1 duplicated lifecycle orchestration; ~13 pre‑existing API `.lean()` typing warnings.)
+
 ## Demo-readiness checklist
 - [ ] Smoke-test on dev stack: non-member gets 403 on placements/floors/rooms/versions/assets by-id.
 - [ ] Editor: make edits, close tab → unsaved-changes prompt appears.

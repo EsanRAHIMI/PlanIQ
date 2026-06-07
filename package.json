@@ -18,6 +18,8 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "smoke": "node --experimental-strip-types apps/api/test/permission.smoke.ts && node --experimental-strip-types apps/api/test/lifecycle.smoke.ts && node --experimental-strip-types apps/web/test/editor-store.smoke.ts",
+    "e2e:reliability": "pnpm --filter @planiq/api run test:e2e -- reliability",
     "seed": "pnpm --filter @planiq/api seed",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\""
   },

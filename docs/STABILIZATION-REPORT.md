@@ -71,12 +71,10 @@ Static-analysis audit of the full stack (the dev stack — Mongo/S3/Redis — is
 
 Three suites exercise the **real** code behind the fixes and were executed here; one HTTP e2e suite is written and run‑ready on the dev stack (it skips cleanly without `API_URL`).
 
-**Commands run**
-- `node --experimental-strip-types apps/api/test/permission.smoke.ts`
-- `node --experimental-strip-types apps/api/test/lifecycle.smoke.ts`
-- `node --experimental-strip-types apps/web/test/editor-store.smoke.ts`
-- `npx jest --config apps/api/test/jest-e2e.json reliability` (skips without `API_URL`)
-- `API_URL=… npm --workspace apps/api run test:e2e` ← run on the dev stack
+**Commands run** (full runbook: `docs/E2E-RELIABILITY.md`)
+- `pnpm smoke` → runs the 3 logic suites (permission + lifecycle + editor-store).
+- `npx jest --config apps/api/test/jest-e2e.json reliability` → e2e compiles & skips clean without a stack.
+- Dev stack: `API_URL=http://localhost:4000/api/v1 [MONGO_URI=…] pnpm e2e:reliability` ← run on your stack.
 
 **Pass/fail matrix**
 
@@ -85,7 +83,7 @@ Three suites exercise the **real** code behind the fixes and were executed here;
 | permission.smoke (real `assertProjectMember`) | non‑member→403; viewer reads, can't write; editor reads+writes, can't manage; manager manages; owner/global‑admin bypass; empty project rejects | **12/12 pass** |
 | lifecycle.smoke (real `canTransitionProject`) | intended transitions allowed; impossible (draft→delivered, delivered→draft, unknown) rejected; delivery mirror consistent | **15/15 pass** |
 | editor-store.smoke (real Zustand store) | failed autosave keeps dirty (`takeDirty`+`requeueDirty`); delete reversible via undo/redo; requeue ignores ghost ids; locked device not deleted | **8/8 pass** |
-| reliability.e2e-spec (HTTP, dev‑stack) | cross‑tenant 403/404 on floors/placements/rooms/versions/analysis‑runs; member read/write; **batch on floor1 can't delete floor2**; **version restore auto‑snapshots + outsider denied**; create→approve→export→deliver + impossible transition rejected | **written, 6 tests; skips without stack (not executed here)** |
+| reliability.e2e-spec (HTTP, dev‑stack) | cross‑tenant 403/404 on floors/placements/rooms/versions/analysis‑runs; owner read/write; **viewer reads-not-writes, editor writes, editor-can't-approve, manager approves/delivers** (role grading, `MONGO_URI`); **batch on floor1 can't delete floor2**; **version restore auto‑snapshots + outsider denied**; create→approve→export→deliver + impossible transition rejected | **written + self-seeding + idempotent, 9 tests; compiles & skips clean here; run on dev stack — see docs/E2E-RELIABILITY.md** |
 | Python rules/quality/understanding | engine invariants unchanged | **19/19 pass** |
 
 **Bugs found by these tests:** none new — the suites confirm the C1/C2/H1/H2 fixes hold at the logic level. The lifecycle suite did surface a wrong test *assumption* (review→exported is intended per the documented map, not a bug), which was corrected — no product change.

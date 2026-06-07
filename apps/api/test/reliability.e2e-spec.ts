@@ -36,6 +36,37 @@ const ok = (s: number) => s >= 200 && s < 300;
 const newDevice = (deviceCode: string, x: number, y: number) =>
   ({ deviceCode, position: { x, y }, rotation: 0, scale: 1 });
 
+// ── Diagnostics: on a failing request, print the REAL backend response + full context ──
+type Diag = { payload?: unknown; projectId?: string; floorId?: string; role?: string };
+function dump(res: any, label: string, ctx: Diag = {}) {
+  const req = res?.req ?? {};
+  const lines = [
+    `\n──────── ${label} ────────`,
+    `  request : ${req.method ?? '?'} ${req.path ?? req.url ?? '?'}`,
+    `  status  : ${res?.status}`,
+    `  body    : ${JSON.stringify(res?.body)}`,
+  ];
+  if ((!res?.body || Object.keys(res.body).length === 0) && res?.text) lines.push(`  text    : ${res.text}`);
+  if (ctx.payload !== undefined) lines.push(`  payload : ${JSON.stringify(ctx.payload)}`);
+  if (ctx.role) lines.push(`  role    : ${ctx.role}`);
+  if (ctx.projectId) lines.push(`  project : ${ctx.projectId}`);
+  if (ctx.floorId) lines.push(`  floor   : ${ctx.floorId}`);
+  // eslint-disable-next-line no-console
+  console.error(lines.join('\n'));
+}
+function expectOk(res: any, label: string, ctx?: Diag) {
+  if (!ok(res?.status)) dump(res, label, ctx);
+  expect(ok(res?.status)).toBe(true);
+}
+function expectStatusIn(res: any, allowed: number[], label: string, ctx?: Diag) {
+  if (!allowed.includes(res?.status)) dump(res, label, ctx);
+  expect(allowed).toContain(res?.status);
+}
+function expectStatus(res: any, code: number, label: string, ctx?: Diag) {
+  if (res?.status !== code) dump(res, label, ctx);
+  expect(res?.status).toBe(code);
+}
+
 async function registerOwner() {
   const res = await request(API!).post('/auth/register').send({
     email: `${RUN}-owner@example.com`, password: PW, name: 'QA Owner', tenantName: `QA ${RUN}`,
@@ -100,8 +131,10 @@ d('Reliability e2e (requires API_URL)', () => {
       // add the seeded users to THIS project with their roles
       for (const role of ['viewer', 'editor', 'manager']) {
         const u = await conn!.model('User').findOne({ email: `${RUN}-${role}@example.com` }).lean<any>();
-        await request(API!).post(`/projects/${projectId}/members`).set(auth(owner.token))
-          .send({ userId: String(u._id), role });
+        const add = await request(API!).post(`/projects/${projectId}/members`).set(auth(owner.token))
+          .send({ userId: String(u?._id), role });
+        // eslint-disable-next-line no-console
+        console.error(`  seed member ${role}: userId=${u?._id} addStatus=${add.status} members=${JSON.stringify(add.body?.members ?? add.body)}`);
       }
     }
   }, 30000);
@@ -134,46 +167,48 @@ d('Reliability e2e (requires API_URL)', () => {
   });
 
   test('outsider cannot WRITE placements on another project (403/404)', async () => {
-    const res = await request(API!).patch(`/floors/${floor1}/placements`).set(auth(outsider.token))
-      .send({ upserts: [newDevice('WIFI_AP', 0.5, 0.5)], deletes: [] });
-    expect([403, 404]).toContain(res.status);
+    const payload = { upserts: [newDevice('WIFI_AP', 0.5, 0.5)], deletes: [] };
+    const res = await request(API!).patch(`/floors/${floor1}/placements`).set(auth(outsider.token)).send(payload);
+    expectStatusIn(res, [403, 404], 'outsider WRITE placements', { payload, floorId: floor1, projectId, role: 'outsider' });
   });
 
   test('owner can read + write', async () => {
-    expect((await request(API!).get(`/floors/${floor1}/placements`).set(auth(owner.token))).status).toBe(200);
-    const w = await request(API!).patch(`/floors/${floor1}/placements`).set(auth(owner.token))
-      .send({ upserts: [newDevice('WIFI_AP', 0.4, 0.4)], deletes: [] });
-    expect(ok(w.status)).toBe(true);
+    const read = await request(API!).get(`/floors/${floor1}/placements`).set(auth(owner.token));
+    expectStatus(read, 200, 'owner READ placements', { floorId: floor1, projectId, role: 'owner' });
+    const payload = { upserts: [newDevice('WIFI_AP', 0.4, 0.4)], deletes: [] };
+    const w = await request(API!).patch(`/floors/${floor1}/placements`).set(auth(owner.token)).send(payload);
+    expectOk(w, 'owner WRITE placements', { payload, floorId: floor1, projectId, role: 'owner' });
   });
 
   // ── role-graded membership (needs MONGO_URI to seed members) ──
   (MONGO ? test : test.skip)('viewer can READ but not WRITE', async () => {
-    expect((await request(API!).get(`/floors/${floor1}/placements`).set(auth(roleTokens.viewer))).status).toBe(200);
-    const w = await request(API!).patch(`/floors/${floor1}/placements`).set(auth(roleTokens.viewer))
-      .send({ upserts: [newDevice('SENSOR', 0.3, 0.3)], deletes: [] });
-    expect(w.status).toBe(403);
+    const read = await request(API!).get(`/floors/${floor1}/placements`).set(auth(roleTokens.viewer));
+    expectStatus(read, 200, 'viewer READ placements', { floorId: floor1, projectId, role: 'viewer' });
+    const payload = { upserts: [newDevice('SENSOR', 0.3, 0.3)], deletes: [] };
+    const w = await request(API!).patch(`/floors/${floor1}/placements`).set(auth(roleTokens.viewer)).send(payload);
+    expectStatus(w, 403, 'viewer WRITE placements (must be 403)', { payload, floorId: floor1, projectId, role: 'viewer' });
   });
 
   (MONGO ? test : test.skip)('editor can WRITE', async () => {
-    const w = await request(API!).patch(`/floors/${floor1}/placements`).set(auth(roleTokens.editor))
-      .send({ upserts: [newDevice('SPEAKER', 0.2, 0.2)], deletes: [] });
-    expect(ok(w.status)).toBe(true);
+    const payload = { upserts: [newDevice('SPEAKER', 0.2, 0.2)], deletes: [] };
+    const w = await request(API!).patch(`/floors/${floor1}/placements`).set(auth(roleTokens.editor)).send(payload);
+    expectOk(w, 'editor WRITE placements', { payload, floorId: floor1, projectId, role: 'editor' });
   });
 
   (MONGO ? test : test.skip)('editor cannot approve; manager can approve/deliver', async () => {
     const e = await request(API!).patch(`/projects/${projectId}/status`).set(auth(roleTokens.editor)).send({ status: 'approved' });
-    expect(e.status).toBe(403);
+    expectStatus(e, 403, 'editor APPROVE (must be 403)', { payload: { status: 'approved' }, projectId, role: 'editor' });
     for (const status of ['approved', 'exported', 'delivered']) {
       const m = await request(API!).patch(`/projects/${projectId}/status`).set(auth(roleTokens.manager)).send({ status });
-      expect(ok(m.status)).toBe(true);
+      expectOk(m, `manager STATUS → ${status}`, { payload: { status }, projectId, role: 'manager' });
     }
   });
 
   // ── H2: batch save floor-scoping ──
   test('batch on floor1 cannot delete floor2 placements', async () => {
-    const wrote = await request(API!).patch(`/floors/${floor2}/placements`).set(auth(owner.token))
-      .send({ upserts: [newDevice('SENSOR', 0.6, 0.6)], deletes: [] });
-    expect(ok(wrote.status)).toBe(true);                      // write must actually succeed
+    const payload = { upserts: [newDevice('SENSOR', 0.6, 0.6)], deletes: [] };
+    const wrote = await request(API!).patch(`/floors/${floor2}/placements`).set(auth(owner.token)).send(payload);
+    expectOk(wrote, 'owner WRITE on floor2', { payload, floorId: floor2, projectId, role: 'owner' });
     const before = await request(API!).get(`/floors/${floor2}/placements`).set(auth(owner.token));
     const arr = before.body.placements ?? before.body;
     const f2id = arr[0]?.id ?? arr[0]?._id;

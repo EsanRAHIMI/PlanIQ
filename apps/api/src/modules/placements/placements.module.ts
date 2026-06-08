@@ -1,7 +1,7 @@
 import { Module, Injectable, Controller, Get, Post, Patch, Delete, Param, Body, UsePipes, Query, NotFoundException, BadRequestException } from '@nestjs/common';
 import { MongooseModule, InjectModel } from '@nestjs/mongoose';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import {
   batchPlacementSchema, suggestPlacements, DEFAULT_RULE_CONFIG, runQualityPipeline,
   AI_SETTINGS_KEY, normalizeAiSettings, countsFromQcSummary,
@@ -93,20 +93,32 @@ export class PlacementsService {
     return this.placements.create({ ...dto, floorId, tenantId: user.tenantId, projectId: floor?.projectId });
   }
 
-  /** Batch upsert/delete — the editor's debounced autosave. */
+  /** Batch upsert/delete — the editor's debounced autosave.
+   *  Splits into INSERTS (new placements — no/invalid id → let Mongo assign a fresh _id) and
+   *  UPDATES (existing placements keyed by a real ObjectId). New placements must never carry
+   *  `_id: null` (that collides on the unique _id index — E11000). All writes are scoped to
+   *  THIS floor so a batch can't touch another floor's placements. */
   async batch(user: AuthUser, floorId: string, body: { upserts: any[]; deletes: string[] }) {
     const floor = await this.assertFloor(user, floorId, 'editor');
-    const ops = body.upserts.map((p) => ({
-      updateOne: {
-        // Scope by floorId so a batch can only touch placements on THIS floor (an id from
-        // another floor cannot be hijacked/moved). New ids upsert with this floorId.
-        filter: { _id: p.id, tenantId: user.tenantId, floorId },
-        update: { $set: { ...p, _id: undefined, floorId, tenantId: user.tenantId, projectId: floor?.projectId } },
-        upsert: true,
-      },
-    }));
-    if (ops.length) await this.placements.bulkWrite(ops as any);
-    if (body.deletes?.length) await this.placements.deleteMany({ _id: { $in: body.deletes }, tenantId: user.tenantId, floorId });
+    const base = { floorId, tenantId: user.tenantId, projectId: floor?.projectId };
+    const inserts: any[] = [];
+    const updates: any[] = [];
+    for (const p of body.upserts ?? []) {
+      const { id, _id, ...rest } = p;                       // never let a client id/_id reach the doc body
+      const realId = id ?? _id;
+      if (realId && Types.ObjectId.isValid(String(realId))) {
+        // existing placement → update in place (no upsert: a client id can't create a doc)
+        updates.push({ updateOne: { filter: { _id: realId, tenantId: user.tenantId, floorId }, update: { $set: { ...rest, ...base } } } });
+      } else {
+        inserts.push({ ...rest, ...base });                 // new → Mongo generates a unique _id
+      }
+    }
+    if (updates.length) await this.placements.bulkWrite(updates as any);
+    if (inserts.length) await this.placements.insertMany(inserts);
+    if (body.deletes?.length) {
+      const ids = body.deletes.filter((d) => Types.ObjectId.isValid(String(d)));
+      if (ids.length) await this.placements.deleteMany({ _id: { $in: ids }, tenantId: user.tenantId, floorId });
+    }
     const count = await this.placements.countDocuments({ floorId });
     await this.floors.updateOne({ _id: floorId }, { 'counts.placements': count });
     return { ok: true, count };

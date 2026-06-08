@@ -91,6 +91,7 @@ d('Reliability e2e (requires API_URL)', () => {
   let projectId: string, floor1: string, floor2: string;
   const roleTokens: Record<string, string> = {};
   const createdTenantIds: string[] = [];
+  const createdProjectIds: string[] = [];   // extra projects the workflow test creates (cleaned via tenantId)
 
   beforeAll(async () => {
     owner = await registerOwner();
@@ -195,10 +196,12 @@ d('Reliability e2e (requires API_URL)', () => {
     expectOk(w, 'editor WRITE placements', { payload, floorId: floor1, projectId, role: 'editor' });
   });
 
-  (MONGO ? test : test.skip)('editor cannot approve; manager can approve/deliver', async () => {
-    const e = await request(API!).patch(`/projects/${projectId}/status`).set(auth(roleTokens.editor)).send({ status: 'approved' });
-    expectStatus(e, 403, 'editor APPROVE (must be 403)', { payload: { status: 'approved' }, projectId, role: 'editor' });
-    for (const status of ['approved', 'exported', 'delivered']) {
+  (MONGO ? test : test.skip)('editor cannot change status; manager drives the full lifecycle chain', async () => {
+    // editor lacks the project 'manager' role → any status change is forbidden
+    const e = await request(API!).patch(`/projects/${projectId}/status`).set(auth(roleTokens.editor)).send({ status: 'in_progress' });
+    expectStatus(e, 403, 'editor STATUS (must be 403)', { payload: { status: 'in_progress' }, projectId, role: 'editor' });
+    // manager walks the REAL chain in order — no shortcuts (project starts at 'draft')
+    for (const status of ['in_progress', 'review', 'approved', 'exported', 'delivered']) {
       const m = await request(API!).patch(`/projects/${projectId}/status`).set(auth(roleTokens.manager)).send({ status });
       expectOk(m, `manager STATUS → ${status}`, { payload: { status }, projectId, role: 'manager' });
     }
@@ -220,6 +223,31 @@ d('Reliability e2e (requires API_URL)', () => {
     expect((afterArr).some((p: any) => (p.id ?? p._id) === f2id)).toBe(true);
   });
 
+  // ── batch insert/update integrity (the _id:null regression) ──
+  test('batch inserts multiple NEW placements and updates an existing one (no _id collision)', async () => {
+    const f = await request(API!).post(`/projects/${projectId}/floors`).set(auth(owner.token)).send({ name: 'Batch', level: 9 });
+    const fid = f.body._id ?? f.body.id;
+    expect(fid).toBeTruthy();
+    // insert THREE new placements in one batch — each must get its own _id (no dup-key 500)
+    const multi = { upserts: [newDevice('WIFI_AP', 0.1, 0.1), newDevice('SENSOR', 0.2, 0.2), newDevice('SPEAKER', 0.3, 0.3)], deletes: [] };
+    const ins = await request(API!).patch(`/floors/${fid}/placements`).set(auth(owner.token)).send(multi);
+    expectOk(ins, 'batch insert x3', { payload: multi, floorId: fid, role: 'owner' });
+    const list = await request(API!).get(`/floors/${fid}/placements`).set(auth(owner.token));
+    const arr = list.body.placements ?? list.body;
+    expect(arr.length).toBe(3);
+    // update ONE existing placement by its real id — count must stay 3 (no new doc), pos changes
+    const target = arr[0];
+    const tid = target.id ?? target._id;
+    const upd = { upserts: [{ id: tid, deviceCode: target.deviceCode, position: { x: 0.9, y: 0.9 }, rotation: 0, scale: 1 }], deletes: [] };
+    const u = await request(API!).patch(`/floors/${fid}/placements`).set(auth(owner.token)).send(upd);
+    expectOk(u, 'batch update existing', { payload: upd, floorId: fid, role: 'owner' });
+    const list2 = await request(API!).get(`/floors/${fid}/placements`).set(auth(owner.token));
+    const arr2 = list2.body.placements ?? list2.body;
+    expect(arr2.length).toBe(3);                                   // updated in place, not inserted
+    const moved = arr2.find((p: any) => (p.id ?? p._id) === tid);
+    expect(moved?.position).toMatchObject({ x: 0.9, y: 0.9 });
+  });
+
   // ── C2: version restore ──
   test('version restore creates an auto-snapshot; outsider cannot restore', async () => {
     await request(API!).post(`/floors/${floor1}/versions`).set(auth(owner.token)).send({ label: 'v1' });
@@ -235,13 +263,22 @@ d('Reliability e2e (requires API_URL)', () => {
     expect([403, 404]).toContain(denied.status);
   });
 
-  // ── workflow lifecycle ──
-  test('create → approve → export → deliver works; impossible transition rejected', async () => {
+  // ── workflow lifecycle (own fresh project → order-independent of the role test above) ──
+  test('create → in_progress → review → approved → exported → delivered; invalid shortcut rejected', async () => {
+    const p = await request(API!).post('/projects').set(auth(owner.token)).send({ name: `QA ${RUN} wf` });
+    const pid = p.body._id ?? p.body.id;
+    expect(pid).toBeTruthy();
+    createdProjectIds.push(pid);
+    // the REAL chain, in order
     for (const status of ['in_progress', 'review', 'approved', 'exported', 'delivered']) {
-      const res = await request(API!).patch(`/projects/${projectId}/status`).set(auth(owner.token)).send({ status });
-      expect(ok(res.status)).toBe(true);
+      const res = await request(API!).patch(`/projects/${pid}/status`).set(auth(owner.token)).send({ status });
+      expectOk(res, `workflow STATUS → ${status}`, { payload: { status }, projectId: pid, role: 'owner' });
     }
-    const bad = await request(API!).patch(`/projects/${projectId}/status`).set(auth(owner.token)).send({ status: 'draft' });
-    expect(bad.status).toBeGreaterThanOrEqual(400);
+    // an impossible shortcut on a fresh project is rejected (draft → delivered)
+    const p2 = await request(API!).post('/projects').set(auth(owner.token)).send({ name: `QA ${RUN} wf2` });
+    const pid2 = p2.body._id ?? p2.body.id;
+    createdProjectIds.push(pid2);
+    const bad = await request(API!).patch(`/projects/${pid2}/status`).set(auth(owner.token)).send({ status: 'delivered' });
+    expect(bad.status).toBeGreaterThanOrEqual(400);                // draft → delivered has no path
   });
 });

@@ -6,6 +6,11 @@ Static-analysis audit of the full stack (the dev stack — Mongo/S3/Redis — is
 
 ### CRITICAL
 
+**C3 — `ZodValidationPipe` 400'd every editor write (found by the e2e).**
+*Root cause:* the pipe ignored `ArgumentMetadata`, so a method-level `@UsePipes(new ZodValidationPipe(bodySchema))` ran the **body** schema against **every** handler argument — including the string `:floorId` **path param** → `"Expected object, received string"` (400). This broke every route pairing a Zod pipe with a path param: `PATCH /floors/:floorId/placements` (the editor's add/edit/move autosave + batch save), `POST /floors/:floorId/rooms`, `PATCH /rooms/:id`. Body-only routes (e.g. `/projects/:id/status`) were unaffected, which is why it hid for so long (AI placements are persisted by the worker, not this endpoint). Pre-existing — not introduced by the stabilization work; surfaced by the reliability e2e diagnostics.
+*Fix:* `transform(value, metadata)` now returns non-body args untouched (`metadata.type !== 'body'`) and only validates the request body. All Zod-piped routes use body schemas, so this is safe. Regression test: `apps/api/test/zod-pipe.e2e-spec.ts` (4/4 pass, no stack needed) + the reliability e2e owner/editor/viewer/outsider write cases.
+
+
 **C1 — Cross-project data access (broken tenant/membership isolation).**
 *Root cause:* the project list is membership-scoped (`ownerId`/`members[]`), but by-id endpoints for `placements`, `floors`, `analysis` rooms, `versions`, and `assets` authorized on **`tenantId` only**. Any authenticated user in a tenant could read, edit, or delete the devices, floors, rooms, versions, and uploaded plans of projects they are not a member of (`exports` already did this correctly via `assertProjectMember`).
 *Fix:* applied the existing `assertProjectMember` helper consistently — every by-id/by-floor endpoint now resolves floor→project (or asset→project, room→floor→project) and asserts the required role (**viewer** to read, **editor** to write). Files: placements, floors, analysis, versions, assets, analysis-runs modules.
@@ -15,6 +20,10 @@ Static-analysis audit of the full stack (the dev stack — Mongo/S3/Redis — is
 *Fix:* restore now requires **editor** project membership; reads/deletes/inserts are tenant-scoped; the pre-restore auto-snapshot is retained so a restore is itself reversible.
 
 ### HIGH
+
+**H3 — Batch autosave inserted new placements with `_id: null` (data corruption, found by e2e).**
+*Root cause:* the batch upsert built `update: { $set: { ..., _id: undefined } }` with `filter: { _id: p.id }`. For a NEW placement (no id) the driver serialised `_id: undefined` → `null`, so the first new device inserted with `_id: null` and the next collided (`E11000 dup key _id: null`). Worse, before the floor-scoped filter, a second floor's "new" write would *match and hijack* the first floor's `_id: null` doc — silent cross-floor corruption.
+*Fix:* the batch now **splits** upserts — new placements (no/invalid id) go through `insertMany` so Mongo assigns a fresh `_id`; existing placements (valid ObjectId) are updated in place (`updateOne`, no upsert, floor-scoped); deletes are filtered to valid ObjectIds and floor-scoped. No client `id`/`_id` ever reaches the document body. Regression: reliability e2e "batch inserts multiple NEW placements and updates an existing one" + "batch on floor1 cannot delete floor2".
 
 **H1 — Editor data loss on reload/close.**
 *Root cause:* autosave is debounced 800 ms and a failed save keeps edits queued, but nothing warned the user if they closed/reloaded the tab with edits still pending → silent loss.
